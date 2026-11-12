@@ -1,0 +1,130 @@
+﻿{
+    "obfuscated/non_roblox/wearedevs/lua.lua":  {
+                                                    "provider":  "wearedevs",
+                                                    "url":  "https://wearedevs.net/obfuscator",
+                                                    "generated":  "2026-11-12",
+                                                    "method":  "manual browser submission by user",
+                                                    "banner":  "--[[ v1.0.0 https://wearedevs.net/obfuscator ]]",
+                                                    "original_output_sha256":  "130555c4f47839a8f6a183da4ed304338117da6a4a827653b49ec30b46795707",
+                                                    "source_sha256":  "d8527a34be465b4e7655ac6e57c61d88a5b1f2f28e189f78b6014b85e63ec696",
+                                                    "output_sha256":  "19a36f065533a4cd359bce8fadd9a8f24055b6fe3c79812dd257d174e8cfc976"
+                                                },
+    "obfuscated/non_roblox/wearedevs/luau.luau":  {
+                                                      "provider":  "wearedevs",
+                                                      "url":  "https://wearedevs.net/obfuscator",
+                                                      "generated":  "2026-11-12",
+                                                      "method":  "manual browser submission by user",
+                                                      "banner":  "--[[ v1.0.0 https://wearedevs.net/obfuscator ]]",
+                                                      "original_output_sha256":  "245176973aab1adf3c8f8d9eadd8dc03e337585e2eccf3a514df9fb50cedee0b",
+                                                      "source_sha256":  "a74873536a210cb36a052a0017eb0911472e530bafe69845b5d3e4cb3c01029d",
+                                                      "output_sha256":  "e65b398305666ef489c4ca2655098c42f43b422bd5e45683e4e0819eac3bb69f"
+                                                  },
+    "obfuscated/non_roblox/prometheus/medium/lua.lua":  {
+                                                            "provider":  "prometheus",
+                                                            "repository":  "https://github.com/prometheus-lua/Prometheus",
+                                                            "commit":  "a98c50165f2a53f6d765a82eee60dfea53803445",
+                                                            "preset":  "Medium",
+                                                            "seed":  20261112,
+                                                            "generator_runtime":  "LuaJIT 2.1.1774896198",
+                                                            "lua_version":  "Lua51",
+                                                            "source_sha256":  "d8527a34be465b4e7655ac6e57c61d88a5b1f2f28e189f78b6014b85e63ec696",
+                                                            "output_sha256":  "512c8d2c13cd0429364b2a5685cdf88b82d2e34f74505d9052455bbe5d6e4368"
+                                                        },
+    "obfuscated/non_roblox/prometheus/medium/luau.luau":  {
+                                                              "provider":  "prometheus",
+                                                              "repository":  "https://github.com/prometheus-lua/Prometheus",
+                                                              "commit":  "a98c50165f2a53f6d765a82eee60dfea53803445",
+                                                              "preset":  "Medium",
+                                                              "seed":  20261112,
+                                                              "generator_runtime":  "LuaJIT 2.1.1774896198",
+                                                              "lua_version":  "LuaU",
+                                                              "source_sha256":  "a74873536a210cb36a052a0017eb0911472e530bafe69845b5d3e4cb3c01029d",
+                                                              "output_sha256":  "b8c83e6a5a898b89c770f67c3350624bb3d2a7f607b3c8b4fb4fff1a995a1af7"
+                                                          },
+    "obfuscated/non_roblox/prometheus/strong/lua.lua":  {
+                                                            "provider":  "prometheus",
+                                                            "repository":  "https://github.com/prometheus-lua/Prometheus",
+                                                            "commit":  "a98c50165f2a53f6d765a82eee60dfea53803445",
+                                                            "preset":  "Strong",
+                                                            "seed":  20261112,
+                                                            "generator_runtime":  "LuaJIT 2.1.1774896198",
+                                                            "lua_version":  "Lua51",
+                                                            "source_sha256":  "d8527a34be465b4e7655ac6e57c61d88a5b1f2f28e189f78b6014b85e63ec696",
+                                                            "output_sha256":  "786c6fc47399e062ad574c2100e192257c718e658a6a89b4be1a3180d9ee3b09"
+                                                        },
+    "obfuscated/non_roblox/prometheus/strong/luau.luau":  {
+                                                              "provider":  "prometheus",
+                                                              "repository":  "https://github.com/prometheus-lua/Prometheus",
+                                                              "commit":  "a98c50165f2a53f6d765a82eee60dfea53803445",
+                                                              "preset":  "Strong",
+                                                              "seed":  20261112,
+                                                              "generator_runtime":  "LuaJIT 2.1.1774896198",
+                                                              "lua_version":  "LuaU",
+                                                              "source_sha256":  "a74873536a210cb36a052a0017eb0911472e530bafe69845b5d3e4cb3c01029d",
+                                                              "output_sha256":  "5b8d840a668519cf9819e2a8f2308cda4a5c124fcd9e18d5771b09039bae8028"
+                                                          },
+    "obfuscated/roblox/wearedevs/lua.lua":  {
+                                                "provider":  "wearedevs",
+                                                "url":  "https://wearedevs.net/obfuscator",
+                                                "generated":  "2026-11-12",
+                                                "method":  "manual browser submission by user",
+                                                "banner":  "--[[ v1.0.0 https://wearedevs.net/obfuscator ]]",
+                                                "original_output_sha256":  "dacbced87a99b01b9d1ba3cc0dc766313ca413ad404c7f3dc996001cf4b09076",
+                                                "source_sha256":  "df46d6c8d7aed42c8bea3517f361e8003cd8cd0a2eeb66d4f237e3224198408d",
+                                                "output_sha256":  "fdd6eb9c8b8dbce7f8eb003cc5e8eb0ccef118e7692d422e33c35202948a798d"
+                                            },
+    "obfuscated/roblox/wearedevs/luau.luau":  {
+                                                  "provider":  "wearedevs",
+                                                  "url":  "https://wearedevs.net/obfuscator",
+                                                  "generated":  "2026-11-12",
+                                                  "method":  "manual browser submission by user",
+                                                  "banner":  "--[[ v1.0.0 https://wearedevs.net/obfuscator ]]",
+                                                  "original_output_sha256":  "127aa0d44ede31fe8c2a74f30cb5970c07170d1cafc05fd9ff9287913a5907da",
+                                                  "source_sha256":  "7fdb43d19203433210516ea84b71f9f9cdbd687017e3f3adf92dba2eddedfa4b",
+                                                  "output_sha256":  "540f7217093c049a0c5b977fba7e3daa9816149ea12357d26be33d75c8b07fc0"
+                                              },
+    "obfuscated/roblox/prometheus/medium/lua.lua":  {
+                                                        "provider":  "prometheus",
+                                                        "repository":  "https://github.com/prometheus-lua/Prometheus",
+                                                        "commit":  "a98c50165f2a53f6d765a82eee60dfea53803445",
+                                                        "preset":  "Medium",
+                                                        "seed":  20261112,
+                                                        "generator_runtime":  "LuaJIT 2.1.1774896198",
+                                                        "lua_version":  "Lua51",
+                                                        "source_sha256":  "df46d6c8d7aed42c8bea3517f361e8003cd8cd0a2eeb66d4f237e3224198408d",
+                                                        "output_sha256":  "539f02d92460dc18d4c23b2aaa85ccfb67fa0c4c85b64b08bf6c02d6c68b701d"
+                                                    },
+    "obfuscated/roblox/prometheus/medium/luau.luau":  {
+                                                          "provider":  "prometheus",
+                                                          "repository":  "https://github.com/prometheus-lua/Prometheus",
+                                                          "commit":  "a98c50165f2a53f6d765a82eee60dfea53803445",
+                                                          "preset":  "Medium",
+                                                          "seed":  20261112,
+                                                          "generator_runtime":  "LuaJIT 2.1.1774896198",
+                                                          "lua_version":  "LuaU",
+                                                          "source_sha256":  "7fdb43d19203433210516ea84b71f9f9cdbd687017e3f3adf92dba2eddedfa4b",
+                                                          "output_sha256":  "52823ab3c57a713c040671619a0271e13ea709e8ee9164b0c09d0908a257b338"
+                                                      },
+    "obfuscated/roblox/prometheus/strong/lua.lua":  {
+                                                        "provider":  "prometheus",
+                                                        "repository":  "https://github.com/prometheus-lua/Prometheus",
+                                                        "commit":  "a98c50165f2a53f6d765a82eee60dfea53803445",
+                                                        "preset":  "Strong",
+                                                        "seed":  20261112,
+                                                        "generator_runtime":  "LuaJIT 2.1.1774896198",
+                                                        "lua_version":  "Lua51",
+                                                        "source_sha256":  "df46d6c8d7aed42c8bea3517f361e8003cd8cd0a2eeb66d4f237e3224198408d",
+                                                        "output_sha256":  "12a1ce7ba59cb87e88075a9714b920ddef9c16196f363e3ac957605a519dbea3"
+                                                    },
+    "obfuscated/roblox/prometheus/strong/luau.luau":  {
+                                                          "provider":  "prometheus",
+                                                          "repository":  "https://github.com/prometheus-lua/Prometheus",
+                                                          "commit":  "a98c50165f2a53f6d765a82eee60dfea53803445",
+                                                          "preset":  "Strong",
+                                                          "seed":  20261112,
+                                                          "generator_runtime":  "LuaJIT 2.1.1774896198",
+                                                          "lua_version":  "LuaU",
+                                                          "source_sha256":  "7fdb43d19203433210516ea84b71f9f9cdbd687017e3f3adf92dba2eddedfa4b",
+                                                          "output_sha256":  "68096773a734f6c081d6efc31a4385e429b21305fecf89fb2524edf3c16899f2"
+                                                      }
+}

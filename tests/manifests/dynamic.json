@@ -1,0 +1,37 @@
+{
+    "seed": 20261112,
+    "prometheus_root": "re/prometheus",
+    "presets": ["Minify", "Weak", "Cff", "Vmify", "Medium", "Strong"],
+    "isolated_steps": [
+        "ConstantArray",
+        "EncryptStrings",
+        "NumbersToExpressions",
+        "SplitStrings",
+        "ProxifyLocals",
+        "WrapInFunction",
+        "AddVararg"
+    ],
+    "lua51_cases": [
+        "src_non_roblox_lua",
+        "closures",
+        "loops",
+        "multi_ret",
+        "numbers",
+        "strings",
+        "signed_zero",
+        "for_coerce",
+        "parens",
+        "ambig_call",
+        "repeat_scope",
+        "synth_expr",
+        "synth_cfg",
+        "synth_upval"
+    ],
+    "luau_cases": [
+        "src_non_roblox_luau",
+        "src_roblox_luau",
+        "luau_compound",
+        "luau_ifelse",
+        "luau_continue"
+    ]
+}

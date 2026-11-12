@@ -1,6 +1,8 @@
 # UnPromised
 
-UnPromised is a full static devirtualizer, unobfuscator/deobfuscator and re-optimizer, written in PURE Lua for WeAreDevs/Prometheus obfuscated Lua and Luau Scripts.
+UnPromised is a full static devirtualizer, unobfuscator/deobfuscator and re-optimizer, written in PURE Lua for [WeAreDevs](https://wearedevs.net/obfuscator)/[Prometheus](https://github.com/levno-710/Prometheus) obfuscated Lua and Luau Scripts.
+
+> Note: The [WeAreDevs](https://wearedevs.net/obfuscator) obfuscator is internally upstream pre-v0.3 version of upstream [Prometheus](https://github.com/levno-710/Prometheus) modofied with watermark.
 
 ## usage
 
@@ -11,9 +13,9 @@ UnPromised is a full static devirtualizer, unobfuscator/deobfuscator and re-opti
 ## reporting issues / problems
 
 When encountering issues while deobfuscation, check:
-- If WeAreDevs/Prometheus has been updated. If so, then you have to wait for a update of the Deobfuscator.
+- If [WeAreDevs](https://wearedevs.net/obfuscator)/[Prometheus](https://github.com/levno-710/Prometheus) has been updated. If so, then you have to wait for a update of the Deobfuscator.
 - If you have the correct environment set up for Lua/Luau with the correct version
-- If your script is not native Prometheus/WeAreDevs
+- If your script is not native [Prometheus](https://github.com/levno-710/Prometheus)/[WeAreDevs](https://wearedevs.net/obfuscator)
 When all of these were checked and the problem is not solved:
 - Open a Issue on GitHub CONTAINING your script as a Pastebin/Alternative Source with the error message
 
