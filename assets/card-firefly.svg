@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="340" height="84" viewBox="0 0 340 84" fill="none">
+  <defs>
+    <linearGradient id="bg-f" x1="0" y1="0" x2="340" y2="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#191318"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="bd-f" x1="0" y1="0" x2="340" y2="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ef4444" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#f97316" stop-opacity="0.25"/>
+    </linearGradient>
+    <linearGradient id="ic-f" x1="18" y1="18" x2="66" y2="66" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ef4444"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="338" height="82" rx="12" fill="url(#bg-f)" stroke="url(#bd-f)" stroke-width="1.5"/>
+  <rect x="18" y="18" width="48" height="48" rx="10" fill="url(#ic-f)"/>
+  <circle cx="42" cy="42" r="11" stroke="#ffffff" stroke-width="2"/>
+  <ellipse cx="42" cy="42" rx="5" ry="11" stroke="#ffffff" stroke-width="1.8"/>
+  <line x1="31" y1="42" x2="53" y2="42" stroke="#ffffff" stroke-width="1.8"/>
+  <text x="80" y="38" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="700">FireflyProtector</text>
+  <text x="80" y="57" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="500">fireflyprotector.xyz/deobfuscator</text>
+  <path d="M308 37h7v7m0-7-8 8" stroke="#f97316" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

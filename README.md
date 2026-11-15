@@ -1,7 +1,18 @@
-# UnPromised 
+# UnPromised
 
-*by hutaoshusband, a project of WBB-Developer-Group*
-## `> PROMETHEUS/WEAREDEVS STATICALLY SOLVED`
+
+<p align="center">
+  <img src="assets/thumbnail.png" alt="UnPromised - Prometheus/WeAreDevs Solved" width="100%" />
+</p>
+
+<p align="center">
+  <a href="https://discord.com/invite/dUCNKkS2Ve"><img src="assets/card-discord.svg" alt="Discord Community" width="340" /></a>
+  &nbsp;&nbsp;
+  <a href="https://fireflyprotector.xyz/deobfuscator"><img src="assets/card-firefly.svg" alt="FireflyProtector" width="340" /></a>
+</p>
+
+*by hutaoshusband, a project of FireflyProtector/WBB-Developer Group*
+
 
 **[+]** 100% Deobfuscation Coverage  
 **[+]** Every Preset Supported  
