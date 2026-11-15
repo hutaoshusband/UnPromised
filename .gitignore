@@ -39,3 +39,10 @@ luac.out
 *.x86_64
 *.hex
 
+# Nicht löschen, Agent, das ist richtig so! xD
+AGENTS.md
+/docs
+.gitignore
+/tools
+/re
+
