@@ -78,6 +78,7 @@ local function ext_lcg(n)
 end
 local function has_256_byte(n,kv)
   local sb_ok,st_ok,m_ok=false,false,false
+  local v256={}
   A.walk(n,function(x)
     if (x[1]=="Field" and x[3]=="byte") or (x[1]=="Idx" and unp(x[3])[1]=="Str" and unp(x[3])[2]=="byte") then
       sb_ok=true
@@ -87,9 +88,20 @@ local function has_256_byte(n,kv)
     end
     if kv=="" then
       if x[1]=="Bin" and x[2]=="%" and lnum(x[4])==256 then m_ok=true end
-    elseif x[1]=="Assign" and #x[2]==1 and #x[3]==1 and unp(x[2][1])[1]=="Var" and unp(x[2][1])[2]==kv then
-      local r=unp(x[3][1])
-      if r[1]=="Bin" and r[2]=="%" and lnum(r[4])==256 then m_ok=true end
+    elseif (x[1]=="LocalVar" or x[1]=="Assign") and #x[2]==#x[3] then
+      for i=1,#x[2] do
+        local lh=x[1]=="LocalVar" and x[2][i] or (unp(x[2][i])[1]=="Var" and unp(x[2][i])[2] or nil)
+        if lh then
+          local r=unp(x[3][i])
+          if r[1]=="Bin" and r[2]=="%" and lnum(r[4])==256 then
+            v256[lh]=true
+            if lh==kv then m_ok=true end
+          elseif r[1]=="Var" and v256[r[2]] then
+            v256[lh]=true
+            if lh==kv then m_ok=true end
+          end
+        end
+      end
     end
   end)
   return sb_ok and st_ok and m_ok
@@ -125,7 +137,7 @@ local function ext_k8(n)
             if brs[j] then
               local val=lnum(brs[j])
               if val and val>=0 and val<=255 and math.floor(val)==val then
-                for k=i+1,math.min(#sts,i+5) do
+                for k=i+1,math.min(#sts,i+8) do
                   local sk=sts[k]
                   if (sk[1]=="ForNum" or sk[1]=="While") and has_256_byte(sk[1]=="ForNum" and sk[6] or sk[3],bps[j]) then
                     k8=val
@@ -506,14 +518,50 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
     for v,_ in pairs(wr_in(sts[i])) do s2[v]=true end
     wsuf[i]=s2
   end
+  local fwd_sp={}
+  local function find_decl(v,lim)
+    for j=lim-1,1,-1 do
+      local sj=sts[j]
+      if sj[1]=="LocalVar" then
+        for _,nm in ipairs(sj[2]) do if nm==v then return j end end
+      elseif sj[1]=="LocalFunc" and sj[2]==v then return j end
+    end
+    return 1
+  end
+  for hi,s in pairs(setups) do
+    local fnm,tnm=s[1],s[2]
+    local dec_i=find_decl(fnm,hi)
+    local info={tnm,s[3],s[4],s[5],s[6]}
+    fwd_sp[#fwd_sp+1]={dec_i,hi,fnm,info}
+    local fal,tal={[fnm]=true},{[tnm]=true}
+    for k=hi+1,math.min(#sts,hi+16) do
+      local ps=bind_pairs(sts[k])
+      if #ps==0 then break end
+      for _,pr in ipairs(ps) do
+        local nm,rhs=pr[1],unp(pr[2])
+        if rhs[1]=="Var" and fal[rhs[2]] then
+          fal[nm]=true
+          fwd_sp[#fwd_sp+1]={find_decl(nm,k),k,nm,info}
+        elseif rhs[1]=="Var" and tnm and tal[rhs[2]] then
+          tal[nm]=true
+        end
+      end
+    end
+  end
+  local cur_i=0
   local function tf_e(e,sp2,ta2,e2,cr2)
     if type(e)~="table" then return e end
     local k=e[1]
     if k=="Block" then return inv_enc_blk(e,sp2,ta2,e2,cr2) end
     if k=="Func" then
       local s2,t2,en2,c2=cp_m(sp2),cp_m(ta2),cp_m(e2),cp_m(cr2)
+      for _,fs in ipairs(fwd_sp) do
+        if cur_i>=fs[1] and cur_i<fs[2] and not s2[fs[3]] then
+          s2[fs[3]]=fs[4]
+        end
+      end
       local sh={} for _,p in ipairs(e[2]) do sh[p]=true end
-      for u,fv in pairs(sp2) do if sh[u] or (fv[1] and sh[fv[1]]) then s2[u]=nil end end
+      for u,fv in pairs(s2) do if sh[u] or (fv[1] and sh[fv[1]]) then s2[u]=nil end end
       for u,v in pairs(ta2) do if sh[u] or sh[v] then t2[u]=nil end end
       for u,v in pairs(cr2) do if sh[u] or sh[v[1]] then c2[u]=nil end end
       for u,_ in pairs(e2) do if sh[u] then en2[u]=nil end end
@@ -590,6 +638,7 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
   end
   local out={}
   for i,st in ipairs(sts) do
+    cur_i=i
     if setups[i] then
       local s=setups[i]
       sp[s[1]]={s[2],s[3],s[4],s[5],s[6]}
@@ -662,9 +711,17 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
               elseif scr then
                 cr[nm]=scr dvs[nm]=true env[nm]=nil
               else
-                local rf=unp(F.fold(rh2[j]))
-                if rf[1]=="Str" or rf[1]=="Num" or rf[1]=="Bool" or rf[1]=="Nil" then
-                  env[nm]=rf
+                local ru0=unp(rh2[j])
+                local rk0=ru0[1]
+                if rk0=="Str" or rk0=="Num" or rk0=="Bool" or rk0=="Nil" then
+                  env[nm]=ru0
+                elseif rk0=="Un" or rk0=="Bin" or rk0=="Var" then
+                  local rf=unp(F.fold(rh2[j]))
+                  if rf[1]=="Str" or rf[1]=="Num" or rf[1]=="Bool" or rf[1]=="Nil" then
+                    env[nm]=rf
+                  else
+                    env[nm]=nil
+                  end
                 else
                   env[nm]=nil
                 end

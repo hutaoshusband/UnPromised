@@ -155,37 +155,37 @@ local function is_alloc_fn(f)
   end
   return nil
 end
-local function is_gc_one(f,ref_n)
-  if not ref_n or f[3] or #f[2]~=1 or #f[4][2]~=2 then return nil end
-  local s1,s2=f[4][2][1],f[4][2][2]
-  if s1[1]=="Assign" and s2[1]=="If" and #s2[2]==1 and #s2[2][1][2][2]==1 then
-    local as=s2[2][1][2][2][1]
-    if as[1]=="Assign" and #as[2]==2 and as[2][1][1]=="Idx" and as[2][2][1]=="Idx" then
-      local t1,t2=unp(as[2][1][2]),unp(as[2][2][2])
-      if t1[1]=="Var" and t2[1]=="Var" then
-        if t1[2]==ref_n then return t2[2] elseif t2[2]==ref_n then return t1[2] end
-      end
-    end
-  end
-  return nil
-end
-local function is_gc_batch(f,ref_n)
-  if not ref_n or f[3] or #f[2]~=1 or #f[4][2]~=2 then return nil end
-  local s2=f[4][2][2]
-  if s2[1]=="While" then
-    local ctbl
-    A.walk(s2[3],function(x)
-      if x[1]=="If" and #x[2]==1 and #x[2][1][2][2]==1 then
-        local as=x[2][1][2][2][1]
-        if as[1]=="Assign" and #as[2]==2 and as[2][1][1]=="Idx" and as[2][2][1]=="Idx" then
-          local t1,t2=unp(as[2][1][2]),unp(as[2][2][2])
-          if t1[1]=="Var" and t2[1]=="Var" then
-            if t1[2]==ref_n then ctbl=t2[2] elseif t2[2]==ref_n then ctbl=t1[2] end
+local function find_nil_pair(node,ref_n)
+  local ctbl
+  A.walk(node,function(x)
+    if not ctbl and x[1]=="If" and #x[2]==1 then
+      local ts={}
+      for _,as in ipairs(x[2][1][2][2]) do
+        if as[1]=="Assign" then
+          for i=1,#as[2] do
+            if as[2][i][1]=="Idx" and (not as[3][i] or unp(as[3][i])[1]=="Nil") then
+              local t=unp(as[2][i][2])
+              if t[1]=="Var" then ts[t[2]]=true end
+            end
           end
         end
       end
-    end)
-    return ctbl
+      if ts[ref_n] then
+        for nm,_ in pairs(ts) do if nm~=ref_n then ctbl=nm break end end
+      end
+    end
+  end)
+  return ctbl
+end
+local function is_gc_one(f,ref_n)
+  if not ref_n or f[3] or #f[2]~=1 then return nil end
+  for _,s in ipairs(f[4][2]) do if s[1]=="While" then return nil end end
+  return find_nil_pair(f[4],ref_n)
+end
+local function is_gc_batch(f,ref_n)
+  if not ref_n or f[3] or #f[2]~=1 then return nil end
+  for _,s in ipairs(f[4][2]) do
+    if s[1]=="While" then return find_nil_pair(s[3],ref_n) end
   end
   return nil
 end
@@ -200,17 +200,17 @@ end
 local function is_wrap_gc(f)
   local has_gc=false
   A.walk(f[4],function(x)
-    if (x[1]=="Str" and x[2]=="__gc") or (x[1]=="F" and x[2]=="__gc") then has_gc=true end
+    if (x[1]=="Str" and x[2]=="__gc") or (x[1]=="F" and x[2]=="__gc") or (x[1]=="Field" and x[3]=="__gc") then has_gc=true end
   end)
   return has_gc
 end
-local function parse_mk_cls(f,main_n)
+local function parse_mk_cls(f,ma)
   if f[3] or #f[2]<2 or #f[2]>3 then return nil end
   local fn_p,va_f=nil,nil
   A.walk(f[4],function(x)
-    if x[1]=="Func" then
-      local r=x[4][2][1]
-      if r and r[1]=="Return" and #r[2]==1 and r[2][1][1]=="Call" and unp(r[2][1][2])[1]=="Var" and unp(r[2][1][2])[2]==main_n then
+    if x[1]=="Func" and #x[4][2]>=1 then
+      local r=x[4][2][#x[4][2]]
+      if r and r[1]=="Return" and #r[2]==1 and r[2][1][1]=="Call" and unp(r[2][1][2])[1]=="Var" and ma[unp(r[2][1][2])[2]] then
         fn_p=x[2]
         va_f=x[3]
       end
@@ -247,7 +247,7 @@ local function parse_ctx(fn_e,args)
   end
   local main_n,main_f
   for nm,v in pairs(bnd) do
-    if v[1]=="Func" and (#v[2]==4 or #v[2]==5) then
+    if v[1]=="Func" and #v[2]>=3 and #v[2]<=5 then
       local cs=C.find_cff(v[4])
       if #cs>=1 then
         main_n=nm
@@ -269,6 +269,11 @@ local function parse_ctx(fn_e,args)
     p_upvs=main_f[2][3],
     mk_cls={},
     gc_fns={},
+    alloc_fns={},
+    pack_fns={},
+    unpack_fns={},
+    gf_fns={},
+    wrap_gcs={},
   }
   local mf_locs={}
   for _,p in ipairs(main_f[2]) do mf_locs[p]=true end
@@ -277,32 +282,52 @@ local function parse_ctx(fn_e,args)
     elseif st[1]=="LocalFunc" then mf_locs[st[2]]=true end
   end
   ctx.mf_locs=mf_locs
-  for nm,v in pairs(bnd) do
-    if nm~=main_n and v[1]=="Func" then
+  local function res_bnd(nm)
+    local s={}
+    while bnd[nm] and bnd[nm][1]=="Var" and not s[nm] do s[nm]=true nm=bnd[nm][2] end
+    return nm,bnd[nm]
+  end
+  for nm,_ in pairs(bnd) do
+    local rn,v=res_bnd(nm)
+    if rn~=main_n and v and v[1]=="Func" then
       local cnt,ref=is_alloc_fn(v)
       if cnt then
-        ctx.alloc_fn=nm ctx.cnt_n=cnt ctx.ref_n=ref
+        ctx.alloc_fn=ctx.alloc_fn or rn ctx.alloc_fns[nm]=true ctx.alloc_fns[rn]=true ctx.cnt_n=cnt ctx.ref_n=ref
       elseif is_pack_fn(v) then
-        ctx.pack_fn=nm
+        ctx.pack_fn=ctx.pack_fn or rn ctx.pack_fns[nm]=true ctx.pack_fns[rn]=true
       elseif is_unpack_fn(v,env) then
-        ctx.unpack_fn=nm
+        ctx.unpack_fn=ctx.unpack_fn or rn ctx.unpack_fns[nm]=true ctx.unpack_fns[rn]=true
       elseif is_gf_fn(v,env) then
-        ctx.gf_fn=nm
+        ctx.gf_fn=ctx.gf_fn or rn ctx.gf_fns[nm]=true ctx.gf_fns[rn]=true
       end
-    elseif v[1]=="Tbl" and #v[2]==0 then
     end
   end
-  for nm,v in pairs(bnd) do
-    if nm~=main_n and v[1]=="Func" then
+  local main_al={[main_n]=true}
+  local wcnt={}
+  for i=1,#sts-1 do
+    local s=sts[i]
+    if s[1]=="Assign" then
+      for _,l in ipairs(s[2]) do if l[1]=="Var" then wcnt[l[2]]=(wcnt[l[2]] or 0)+1 end end
+    elseif s[1]=="LocalVar" then
+      for _,nm in ipairs(s[2]) do if s[3][1] then wcnt[nm]=(wcnt[nm] or 0)+1 end end
+    elseif s[1]=="LocalFunc" then wcnt[s[2]]=(wcnt[s[2]] or 0)+1 end
+  end
+  for nm,_ in pairs(bnd) do
+    local rn=res_bnd(nm)
+    if rn==main_n then main_al[nm]=true end
+  end
+  for nm,_ in pairs(bnd) do
+    local rn,v=res_bnd(nm)
+    if rn~=main_n and v and v[1]=="Func" then
       local ct1=is_gc_one(v,ctx.ref_n)
-      if ct1 then ctx.cells_n=ct1 ctx.gc_fns[nm]=true
+      if ct1 then ctx.cells_n=ct1 ctx.gc_fns[nm]=true ctx.gc_fns[rn]=true
       else
         local ct2=is_gc_batch(v,ctx.ref_n)
-        if ct2 then ctx.cells_n=ct2 ctx.gc_fns[nm]=true
-        elseif is_wrap_gc(v) then ctx.wrap_gc=nm
+        if ct2 then ctx.cells_n=ct2 ctx.gc_fns[nm]=true ctx.gc_fns[rn]=true
+        elseif is_wrap_gc(v) then ctx.wrap_gc=ctx.wrap_gc or rn ctx.wrap_gcs[nm]=true ctx.wrap_gcs[rn]=true
         else
-          local mc=parse_mk_cls(v,main_n)
-          if mc then ctx.mk_cls[nm]=mc end
+          local mc=parse_mk_cls(v,main_al)
+          if mc then ctx.mk_cls[nm]=mc ctx.mk_cls[rn]=mc end
         end
       end
     end
@@ -319,13 +344,22 @@ local function parse_ctx(fn_e,args)
     end
   end
   ctx.env_vars={}
-  for i,p in ipairs(ps) do
-    local a=args[i]
-    if a and not mf_locs[p] then
+  local function chk_ev(nm,a)
+    if a and not mf_locs[nm] then
       local has_e=false
       A.walk(a,function(x) if x[1]=="Var" and (x[2]=="_ENV" or x[2]=="getfenv" or x[2]=="_G") then has_e=true end end)
-      if has_e and a[1]~="Var" then ctx.env_vars[p]=true end
-      if a[1]=="Var" and a[2]=="_ENV" then ctx.env_vars[p]=true end
+      if has_e and a[1]~="Var" then ctx.env_vars[nm]=true end
+      if a[1]=="Var" and a[2]=="_ENV" then ctx.env_vars[nm]=true end
+    end
+  end
+  for i,p in ipairs(ps) do chk_ev(p,args[i]) end
+  for k,v in pairs(bnd) do
+    if (wcnt[k] or 0)<=1 and v[1]=="Var" and env[v[2]] and not ctx.mk_cls[k] and not ctx.gc_fns[k] and not ctx.alloc_fns[k] and not ctx.wrap_gcs[k] and not ctx.pack_fns[k] and not ctx.unpack_fns[k] and not ctx.gf_fns[k] then
+      chk_ev(k,env[v[2]])
+      local u=unp(env[v[2]])
+      if u[1]=="Var" or u[1]=="Field" or u[1]=="Nil" or u[1]=="Bool" or u[1]=="Num" or u[1]=="Str" or u[1]=="Bin" then
+        if k~=ctx.pv then env_sub[k]=u end
+      end
     end
   end
   for k,v in pairs(env) do
@@ -368,6 +402,48 @@ local function parse_ctx(fn_e,args)
     end
   end
   for nm,_ in pairs(ctx.spills) do mf_locs[nm]=true end
+  local pa_als,pu_als={},{}
+  local wi=0
+  for idx,st in ipairs(main_f[4][2]) do
+    if st[1]=="While" then wi=idx break end
+    if st[1]=="LocalVar" then
+      for ix,nm in ipairs(st[2]) do
+        local rv=st[3][ix] and unp(st[3][ix])
+        if rv and rv[1]=="Var" then
+          if rv[2]==ctx.p_args then pa_als[nm]=true
+          elseif ctx.p_upvs and rv[2]==ctx.p_upvs then pu_als[nm]=true end
+        end
+      end
+    elseif st[1]=="Assign" and #st[2]==#st[3] then
+      for ix,l in ipairs(st[2]) do
+        local lu,rv=unp(l),unp(st[3][ix])
+        if lu[1]=="Var" and rv[1]=="Var" then
+          if rv[2]==ctx.p_args then pa_als[lu[2]]=true
+          elseif ctx.p_upvs and rv[2]==ctx.p_upvs then pu_als[lu[2]]=true end
+        end
+      end
+    end
+  end
+  if wi>0 and (next(pa_als) or next(pu_als)) then
+    for idx=wi,#main_f[4][2] do
+      A.walk(main_f[4][2][idx],function(x)
+        local k=x[1]
+        if k=="Assign" then
+          for _,l in ipairs(x[2]) do local u=unp(l) if u[1]=="Var" then pa_als[u[2]]=nil pu_als[u[2]]=nil end end
+        elseif k=="LocalVar" then
+          for _,nm in ipairs(x[2]) do pa_als[nm]=nil pu_als[nm]=nil end
+        elseif k=="LocalFunc" then
+          pa_als[x[2]]=nil pu_als[x[2]]=nil
+        elseif k=="ForNum" then
+          pa_als[x[2]]=nil pu_als[x[2]]=nil
+        elseif k=="ForIn" then
+          for _,nm in ipairs(x[2]) do pa_als[nm]=nil pu_als[nm]=nil end
+        end
+      end)
+    end
+  end
+  ctx.pa_als=pa_als
+  ctx.pu_als=pu_als
   ctx.env_sub=env_sub
   ctx.top_env={}
   local mf_ps={}
@@ -385,9 +461,9 @@ local function parse_ctx(fn_e,args)
     local rc=unp(last_s[2][1])
     if rc[1]=="Call" and unp(rc[2])[1]=="Var" and #rc[3]==1 and unp(rc[3][1])[1]=="Var" then
       local fn_n,rt_n=unp(rc[2])[2],unp(rc[3][1])[2]
-      if fn_n==ctx.unpack_fn or (env[fn_n] and is_unpack_expr(env[fn_n],env)) then
+      if ctx.unpack_fns[fn_n] or (env[fn_n] and is_unpack_expr(env[fn_n],env)) or (env_sub[fn_n] and is_unpack_expr(env_sub[fn_n],env)) then
         ctx.ret_tbl=rt_n
-        ctx.ret_unpack=fn_n==ctx.unpack_fn and "unpack" or fn_n
+        ctx.ret_unpack=ctx.unpack_fns[fn_n] and "unpack" or fn_n
       end
     end
   end
@@ -527,7 +603,7 @@ local function norm_stmt(s,ctx,closures)
             local ents
             if pa[1]=="Nil" then
               ents={}
-            elseif pa[1]=="Call" and unp(pa[2])[1]=="Var" and (unp(pa[2])[2]==ctx.wrap_gc or (ctx.gc_fns and ctx.gc_fns[unp(pa[2])[2]])) and not (sh and sh[unp(pa[2])[2]]) and not (ctx.mf_locs and ctx.mf_locs[unp(pa[2])[2]]) and #pa[3]==1 then
+            elseif pa[1]=="Call" and unp(pa[2])[1]=="Var" and (ctx.wrap_gcs[unp(pa[2])[2]] or (ctx.gc_fns and ctx.gc_fns[unp(pa[2])[2]])) and not (sh and sh[unp(pa[2])[2]]) and not (ctx.mf_locs and ctx.mf_locs[unp(pa[2])[2]]) and #pa[3]==1 then
               local tb=unp(pa[3][1])
               if tb[1]=="Tbl" then
                 local ok=true
@@ -548,17 +624,19 @@ local function norm_stmt(s,ctx,closures)
       end
       if fn[1]=="Var" and not (sh and sh[fn[2]]) and not (ctx.mf_locs and ctx.mf_locs[fn[2]]) then
         local nm=fn[2]
-        if nm==ctx.gf_fn and #e[3]>=1 then
+        if ctx.gf_fns[nm] and #e[3]>=1 then
           local tgt=ne(e[3][1],sh)
           local as={} for i=3,#e[3] do as[i-2]=ne(e[3][i],sh) end
           return {"Call",tgt,as}
-        elseif nm==ctx.unpack_fn and #e[3]==1 then
+        elseif ctx.unpack_fns[nm] and #e[3]==1 then
           local a=unp(ne(e[3][1],sh))
           if a[1]=="Var" and a[2]==ctx.p_args then
             if ctx.is_root and ctx.fwds and #ctx.fwds>0 then return {"__FWDVA__"} end
             return {"Vararg"}
           end
           return {"Call",{"Var","unpack"},{a,{"Num",1},{"Idx",cp(a),{"Str","n"}}}}
+        elseif ctx.wrap_gcs and ctx.wrap_gcs[nm] and #e[3]==1 then
+          return ne(e[3][1],sh)
         elseif ctx.mk_cls[nm] and #e[3]>=2 then
           local pc=C.lnum(e[3][1])
           if pc then
@@ -611,6 +689,9 @@ local function norm_stmt(s,ctx,closures)
       local s2=csh(sh)
       for _,p in ipairs(e[2]) do s2[p]=true end
       return {"Func",e[2],e[3],ne_b(e[4],s2)}
+    elseif k=="Var" and not (sh and sh[e[2]]) then
+      if ctx.pa_als and ctx.pa_als[e[2]] then return {"Var",ctx.p_args} end
+      if ctx.pu_als and ctx.pu_als[e[2]] then return {"Var",ctx.p_upvs} end
     end
     return e
   end
@@ -689,7 +770,7 @@ local function norm_stmt(s,ctx,closures)
   elseif k=="Return" then
     if #s[2]==1 then
       local r=unp(s[2][1])
-      if r[1]=="Call" and unp(r[2])[1]=="Var" and unp(r[2])[2]==ctx.unpack_fn and not (ctx.mf_locs and ctx.mf_locs[ctx.unpack_fn]) and #r[3]==1 then
+      if r[1]=="Call" and unp(r[2])[1]=="Var" and ctx.unpack_fns[unp(r[2])[2]] and not (ctx.mf_locs and ctx.mf_locs[unp(r[2])[2]]) and #r[3]==1 then
         local a=unp(r[3][1])
         if a[1]=="Tbl" then
           local es={}
@@ -751,6 +832,94 @@ local function find_pv_asg(st,pv)
     end
   end
   return nil
+end
+local function sym_pure(e)
+  if type(e)~="table" then return true end
+  local k=e[1]
+  if k=="Var" or k=="Nil" or k=="Bool" or k=="Num" or k=="Str" then return true end
+  if k=="Paren" or k=="Un" then return sym_pure(e[#e]) end
+  if k=="Bin" then return sym_pure(e[3]) and sym_pure(e[4]) end
+  return false
+end
+local function sym_sub(e,sym)
+  if type(e)~="table" then return e end
+  local k=e[1]
+  if k=="Var" then return sym[e[2]] and cp(sym[e[2]]) or e end
+  if k=="Paren" then return sym_sub(e[2],sym) end
+  if k=="Un" then return {"Un",e[2],sym_sub(e[3],sym)} end
+  if k=="Bin" then return {"Bin",e[2],sym_sub(e[3],sym),sym_sub(e[4],sym)} end
+  return e
+end
+local function sym_has(e,vs)
+  local hit=false
+  A.walk(e,function(x) if x[1]=="Var" and vs[x[2]] then hit=true end end)
+  return hit
+end
+local function sym_inv(sym,ws)
+  for k,v in pairs(sym) do
+    if ws[k] or sym_has(v,ws) then sym[k]=nil end
+  end
+end
+local function sym_rhs(raw,upto,rhs)
+  local sym={}
+  for j=1,upto do
+    local s=raw[j]
+    local sk=s[1]
+    if sk=="Assign" then
+      local ws,vals={},{}
+      local allv=#s[2]==#s[3]
+      for k=1,#s[2] do
+        local u=unp(s[2][k])
+        if u[1]=="Var" then
+          ws[u[2]]=true
+          if allv and s[3][k] then
+            local nv=unp(sym_sub(s[3][k],sym))
+            if sym_pure(nv) and not sym_has(nv,{[u[2]]=true}) then vals[u[2]]=nv end
+          end
+        end
+      end
+      sym_inv(sym,ws)
+      for nm,nv in pairs(vals) do sym[nm]=nv end
+    elseif sk=="LocalVar" then
+      local ws,vals={},{}
+      for k,nm in ipairs(s[2]) do
+        ws[nm]=true
+        if s[3][k] then
+          local nv=unp(sym_sub(s[3][k],sym))
+          if sym_pure(nv) and not sym_has(nv,{[nm]=true}) then vals[nm]=nv end
+        end
+      end
+      sym_inv(sym,ws)
+      for nm,nv in pairs(vals) do sym[nm]=nv end
+    elseif sk=="If" and #s[2]==1 and not s[3] and #s[2][1][2][2]==1 then
+      local b1=s[2][1][2][2][1]
+      if b1[1]=="Assign" and #b1[2]==1 and #b1[3]==1 and unp(b1[2][1])[1]=="Var" then
+        local vn=unp(b1[2][1])[2]
+        local c=unp(sym_sub(s[2][1][1],sym))
+        local r=unp(sym_sub(b1[3][1],sym))
+        local cur=sym[vn]
+        local nv
+        if cur and sym_pure(c) and sym_pure(r) and not sym_has(r,{[vn]=true}) and not sym_has(c,{[vn]=true}) then
+          if A.eq(c,cur) then nv={"Bin","and",c,r}
+          elseif c[1]=="Un" and c[2]=="not" and A.eq(unp(c[3]),cur) then nv={"Bin","or",unp(c[3]),r} end
+        end
+        sym_inv(sym,{[vn]=true})
+        if nv then sym[vn]=nv end
+      else
+        local ws={}
+        A.walk(s,function(x) if x[1]=="Assign" then for _,l in ipairs(x[2]) do if unp(l)[1]=="Var" then ws[unp(l)[2]]=true end end end end)
+        sym_inv(sym,ws)
+      end
+    else
+      local ws={}
+      A.walk(s,function(x)
+        if x[1]=="Assign" then for _,l in ipairs(x[2]) do if unp(l)[1]=="Var" then ws[unp(l)[2]]=true end end
+        elseif x[1]=="LocalVar" then for _,nm in ipairs(x[2]) do ws[nm]=true end end
+      end)
+      sym_inv(sym,ws)
+    end
+  end
+  return unp(sym_sub(rhs,sym))
 end
 local function ext_cfg_raw(ctx,pc0,closures,bcs)
   local bs={}
@@ -832,13 +1001,22 @@ local function ext_cfg_raw(ctx,pc0,closures,bcs)
                   end
                 end
               end
+              if not tr and i>1 then
+                local sr=sym_rhs(raw,i-1,ru)
+                if sr~=ru then tr=parse_term_rhs(sr,ctx) end
+              end
               if tr then
-                if tr[1]=="Branch" and i<#raw and not pv_ix0 then
-                  bcn=bcn+1
-                  bc_nm="_bc"..bcn
-                  bc_ex=tr[2]
-                  if bcs then bcs[bc_nm]=true end
-                  tr={"Branch",{"Var",bc_nm},tr[3],tr[4]}
+                if tr[1]=="Branch" and not pv_ix0 then
+                  if i<#raw then
+                    bcn=bcn+1
+                    bc_nm="_bc"..bcn
+                    bc_ex=tr[2]
+                    if bcs then bcs[bc_nm]=true end
+                    tr={"Branch",{"Var",bc_nm},tr[3],tr[4]}
+                  else
+                    local ns=norm_stmt({"Return",{tr[2]}},ctx,closures)
+                    if ns and ns[2] and ns[2][1] then tr[2]=ns[2][1] end
+                  end
                 end
                 pv_ix=i pv_slot=p term=tr break
               end
@@ -876,7 +1054,7 @@ local function ext_cfg_raw(ctx,pc0,closures,bcs)
           local ls=#sts>0 and sts[#sts]
           if ls and ls[1]=="Assign" and #ls[2]==1 and #ls[3]==1 and ls[2][1][1]=="Var" and ls[2][1][2]==ctx.ret_tbl then
             local rh=unp(ls[3][1])
-            if rh[1]=="Call" and unp(rh[2])[1]=="Var" and unp(rh[2])[2]==ctx.pack_fn then
+            if rh[1]=="Call" and unp(rh[2])[1]=="Var" and ctx.pack_fns[unp(rh[2])[2]] then
               table.remove(sts)
               term={"Ret",rh[3]}
             elseif rh[1]=="Tbl" then
@@ -924,13 +1102,62 @@ local function ext_cfg_raw(ctx,pc0,closures,bcs)
   if seen["__EXIT__"] then bs["__EXIT__"]={id="__EXIT__",stmts={},term={"Exit"}} end
   return bs
 end
-local function extract_vars_e(e,out,cls)
-  A.walk(e,function(x)
-    if x[1]=="Var" then out[x[2]]=true
-    elseif x[1]=="__CLS__" and cls and cls[x[2]] then
-      for _,u in ipairs(cls[x[2]].ups) do extract_vars_e(u,out,cls) end
+local function ex_v(e,out,cls)
+  if type(e)~="table" then return end
+  local k=e[1]
+  if type(k)~="string" then
+    for i=1,#e do ex_v(e[i],out,cls) end
+    return
+  end
+  if k=="Var" then out[e[2]]=true
+  elseif k=="__CLS__" then
+    if cls and cls[e[2]] then
+      for _,u in ipairs(cls[e[2]].ups) do ex_v(u,out,cls) end
     end
-  end)
+  elseif k=="Block" then
+    for _,s in ipairs(e[2]) do ex_v(s,out,cls) end
+  elseif k=="LocalVar" or k=="Assign" then
+    for _,v in ipairs(e[3]) do ex_v(v,out,cls) end
+    if k=="Assign" then for _,l in ipairs(e[2]) do ex_v(l,out,cls) end end
+  elseif k=="LocalFunc" then ex_v(e[5],out,cls)
+  elseif k=="Func" then ex_v(e[4],out,cls)
+  elseif k=="FuncStmt" then ex_v(e[2],out,cls) ex_v(e[6],out,cls)
+  elseif k=="CAssign" then ex_v(e[3],out,cls) ex_v(e[4],out,cls)
+  elseif k=="Do" then ex_v(e[2],out,cls)
+  elseif k=="While" then ex_v(e[2],out,cls) ex_v(e[3],out,cls)
+  elseif k=="Repeat" then ex_v(e[2],out,cls) ex_v(e[3],out,cls)
+  elseif k=="If" then
+    for _,c in ipairs(e[2]) do ex_v(c[1],out,cls) ex_v(c[2],out,cls) end
+    if e[3] then ex_v(e[3],out,cls) end
+  elseif k=="ForNum" then
+    ex_v(e[3],out,cls) ex_v(e[4],out,cls) if e[5] then ex_v(e[5],out,cls) end ex_v(e[6],out,cls)
+  elseif k=="ForIn" then
+    for _,v in ipairs(e[3]) do ex_v(v,out,cls) end ex_v(e[4],out,cls)
+  elseif k=="Return" or k=="Tbl" then
+    if k=="Return" then for _,v in ipairs(e[2]) do ex_v(v,out,cls) end
+    else
+      for _,f in ipairs(e[2]) do
+        if f[1]=="V" then ex_v(f[2],out,cls)
+        elseif f[1]=="F" then ex_v(f[3],out,cls)
+        else ex_v(f[2],out,cls) ex_v(f[3],out,cls) end
+      end
+    end
+  elseif k=="Call" then
+    ex_v(e[2],out,cls) for _,a in ipairs(e[3]) do ex_v(a,out,cls) end
+  elseif k=="MCall" then
+    ex_v(e[2],out,cls) for _,a in ipairs(e[4]) do ex_v(a,out,cls) end
+  elseif k=="Bin" then ex_v(e[3],out,cls) ex_v(e[4],out,cls)
+  elseif k=="Idx" then ex_v(e[2],out,cls) ex_v(e[3],out,cls)
+  elseif k=="Field" or k=="Paren" then ex_v(e[2],out,cls)
+  elseif k=="Un" then ex_v(e[3],out,cls)
+  elseif k=="IfExpr" then
+    for _,c in ipairs(e[2]) do ex_v(c[1],out,cls) ex_v(c[2],out,cls) end ex_v(e[3],out,cls)
+  elseif k=="NatExpr" then
+    ex_v(e[2],out,cls) ex_v(e[3],out,cls) ex_v(e[4],out,cls)
+  end
+end
+local function extract_vars_e(e,out,cls)
+  ex_v(e,out,cls)
 end
 local function has_cls_n(n)
   local f=false
@@ -1012,37 +1239,47 @@ local function stmt_rw(s,locs,cls)
   return rd,wr
 end
 local function liveness_cfg(bs,locs,cls)
-  local li,lo={},{}
-  for id,_ in pairs(bs) do li[id]={} lo[id]={} end
+  local li,lo,gen,kil,suc={},{},{},{},{}
+  local ids={}
+  for id,b in pairs(bs) do
+    ids[#ids+1]=id
+    li[id]={} lo[id]={}
+    suc[id]=G.succs(b)
+    local g,ki={},{}
+    if b.term[1]=="Branch" then ex_v(b.term[2],g,cls)
+    elseif b.term[1]=="Ret" then
+      for _,e in ipairs(b.term[2]) do ex_v(e,g,cls) end
+    end
+    for i=#b.stmts,1,-1 do
+      local rd,wr=stmt_rw(b.stmts[i],locs,cls)
+      for v,_ in pairs(wr) do g[v]=nil ki[v]=true end
+      for v,_ in pairs(rd) do g[v]=true end
+    end
+    gen[id]=g kil[id]=ki
+  end
   local chg=true
   while chg do
     chg=false
-    for id,b in pairs(bs) do
+    for _,id in ipairs(ids) do
       local nlo={}
-      for _,s in ipairs(G.succs(b)) do
+      for _,s in ipairs(suc[id]) do
         if li[s] then for v,_ in pairs(li[s]) do nlo[v]=true end end
       end
       lo[id]=nlo
       local cur={}
-      for v,_ in pairs(nlo) do cur[v]=true end
-      if b.term[1]=="Branch" then extract_vars_e(b.term[2],cur,cls)
-      elseif b.term[1]=="Ret" then
-        for _,e in ipairs(b.term[2]) do extract_vars_e(e,cur,cls) end
-      end
-      for i=#b.stmts,1,-1 do
-        local rd,wr=stmt_rw(b.stmts[i],locs,cls)
-        for v,_ in pairs(wr) do cur[v]=nil end
-        for v,_ in pairs(rd) do cur[v]=true end
-      end
+      local ki=kil[id]
+      for v,_ in pairs(nlo) do if not ki[v] then cur[v]=true end end
+      for v,_ in pairs(gen[id]) do cur[v]=true end
       local diff=false
-      for v,_ in pairs(cur) do if not li[id][v] then diff=true break end end
-      if not diff then for v,_ in pairs(li[id]) do if not cur[v] then diff=true break end end end
+      local old=li[id]
+      for v,_ in pairs(cur) do if not old[v] then diff=true break end end
+      if not diff then for v,_ in pairs(old) do if not cur[v] then diff=true break end end end
       if diff then li[id]=cur chg=true end
     end
   end
   return li,lo
 end
-local function dse_block(b,out_live,locs,cls)
+local function dse_block(b,out_live,locs,cls,cap)
   local live={}
   for v,_ in pairs(out_live) do live[v]=true end
   if b.term[1]=="Branch" then extract_vars_e(b.term[2],live,cls)
@@ -1056,7 +1293,7 @@ local function dse_block(b,out_live,locs,cls)
     local drop=false
     if s[1]=="Assign" and #s[2]==1 and s[2][1][1]=="Var" then
       local v=s[2][1][2]
-      if locs[v] and not live[v] then
+      if locs[v] and not (cap and cap[v]) and not live[v] then
         local ru=unp(s[3][1])
         if pure_tmp_e(s[3][1]) then drop=true chg=true
         elseif ru[1]=="Call" or ru[1]=="MCall" then s={"CallStmt",ru} chg=true end
@@ -1071,7 +1308,7 @@ local function dse_block(b,out_live,locs,cls)
         local nls,nrs={},{}
         for k=1,#s[2] do
           local v=s[2][k][2]
-          if locs[v] and not live[v] and pure_tmp_e(s[3][k]) then
+          if locs[v] and not (cap and cap[v]) and not live[v] and pure_tmp_e(s[3][k]) then
             chg=true
           else
             nls[#nls+1]=s[2][k]
@@ -1080,6 +1317,16 @@ local function dse_block(b,out_live,locs,cls)
         end
         if #nls==0 then drop=true
         elseif #nls<#s[2] then s={"Assign",nls,nrs} end
+      end
+    elseif s[1]=="If" and #s[2]==1 and not s[3] and #s[2][1][2][2]==1 then
+      local c0=unp(s[2][1][1])
+      local c_ok=c0[1]=="Var" or (c0[1]=="Un" and c0[2]=="not" and unp(c0[3])[1]=="Var")
+      local bs1=s[2][1][2][2][1]
+      if c_ok and bs1[1]=="Assign" and #bs1[2]==1 and #bs1[3]==1 and bs1[2][1][1]=="Var" then
+        local v=bs1[2][1][2]
+        if locs[v] and not (cap and cap[v]) and not live[v] and pure_tmp_e(bs1[3][1]) then
+          drop=true chg=true
+        end
       end
     end
     if not drop then
@@ -1109,6 +1356,7 @@ local function lhs_overwrites(s,v)
 end
 local function inline_temps_blk(b,out_live,locs,ctx)
   local cls=ctx and ctx.cls_reqs
+  local cap=ctx and ctx.cap_cells
   local sts=b.stmts
   local chg=false
   do
@@ -1192,7 +1440,7 @@ local function inline_temps_blk(b,out_live,locs,ctx)
     if s[1]=="Assign" and #s[2]==1 and s[2][1][1]=="Var" and #s[3]==1 then
       local v=s[2][1][2]
       local rhs=s[3][1]
-      if locs[v] then
+      if locs[v] and not (cap and cap[v]) then
         if is_lit_s(rhs) then
           local redef,j_uses=false,{}
           for j=i+1,#sts do
@@ -1242,6 +1490,9 @@ local function inline_temps_blk(b,out_live,locs,ctx)
           local is_p=pure_tmp_e(rhs)
           local deps={}
           extract_vars_e(rhs,deps,cls)
+          if is_p and cap then
+            for d,_ in pairs(deps) do if cap[d] then is_p=false break end end
+          end
           if not deps[v] then
             local rd_next=nil
             local clobber=false
@@ -1424,7 +1675,7 @@ local function dead_tv_after(sts,j,term,ol,tv,cls)
   return true
 end
 local function unpack_pack_cfg(bs,ctx,lo)
-  if not ctx.pack_fn then return false end
+  if not ctx.pack_fns or not next(ctx.pack_fns) then return false end
   local cls=ctx.cls_reqs
   local chg=false
   for id,b in pairs(bs) do
@@ -1436,7 +1687,7 @@ local function unpack_pack_cfg(bs,ctx,lo)
       if s[1]=="Assign" and #s[2]==1 and #s[3]==1 and s[2][1][1]=="Var" then
         local tv=s[2][1][2]
         local pk=unp(s[3][1])
-        if pk[1]=="Call" and unp(pk[2])[1]=="Var" and unp(pk[2])[2]==ctx.pack_fn and not (ctx.mf_locs and ctx.mf_locs[ctx.pack_fn]) then
+        if pk[1]=="Call" and unp(pk[2])[1]=="Var" and ctx.pack_fns[unp(pk[2])[2]] and not (ctx.mf_locs and ctx.mf_locs[unp(pk[2])[2]]) then
           local args=pk[3]
           local lhs,maxk,j={},0,i+1
           while j<=#sts do
@@ -1553,6 +1804,7 @@ local function merge_cfg(bs,ent)
 end
 local function opt_cfg(bs,ent,locs,ctx)
   local cls=ctx and ctx.cls_reqs
+  local cap=ctx and ctx.cap_cells
   unpack_pack_cfg(bs,ctx,nil)
   for _=1,12 do
     local chg=false
@@ -1562,13 +1814,13 @@ local function opt_cfg(bs,ent,locs,ctx)
       _,lo=liveness_cfg(bs,locs,cls)
     end
     for id,b in pairs(bs) do
-      if dse_block(b,lo[id],locs,cls) then chg=true end
+      if dse_block(b,lo[id],locs,cls,cap) then chg=true end
       if inline_temps_blk(b,lo[id],locs,ctx) then chg=true end
     end
     bs=merge_cfg(bs,ent)
     _,lo=liveness_cfg(bs,locs,cls)
     for id,b in pairs(bs) do
-      if dse_block(b,lo[id],locs,cls) then chg=true end
+      if dse_block(b,lo[id],locs,cls,cap) then chg=true end
     end
     if unpack_pack_cfg(bs,ctx,lo) then chg=true end
     if not chg then break end
@@ -1740,12 +1992,20 @@ local function match_for_loops(bs,ent,cls_reqs)
   return for_hdrs
 end
 local function track_cells(bs,ent,ctx,cls_reqs)
-  if not ctx.alloc_fn or not ctx.cells_n or (ctx.mf_locs and (ctx.mf_locs[ctx.alloc_fn] or ctx.mf_locs[ctx.cells_n])) then return {} end
+  local has_al=false
+  if ctx.alloc_fns then
+    for fn,_ in pairs(ctx.alloc_fns) do
+      if not (ctx.mf_locs and ctx.mf_locs[fn]) then has_al=true break end
+    end
+  end
+  if not has_al or not ctx.cells_n or (ctx.mf_locs and ctx.mf_locs[ctx.cells_n]) then return {} end
   local cell_vs={}
   local ord=G.rpo(bs,ent)
   local sites={}
   local function is_ak(s)
-    return s[1]=="Assign" and #s[2]==1 and #s[3]==1 and s[2][1][1]=="Var" and s[3][1][1]=="Call" and #s[3][1][3]==0 and unp(s[3][1][2])[1]=="Var" and unp(s[3][1][2])[2]==ctx.alloc_fn
+    if s[1]~="Assign" or #s[2]~=1 or #s[3]~=1 or s[2][1][1]~="Var" then return false end
+    local r=unp(s[3][1])
+    return r[1]=="Call" and #r[3]==0 and unp(r[2])[1]=="Var" and ctx.alloc_fns[unp(r[2])[2]] and not (ctx.mf_locs and ctx.mf_locs[unp(r[2])[2]])
   end
   for _,id in ipairs(ord) do
     for si,s in ipairs(bs[id].stmts) do
@@ -1839,12 +2099,16 @@ local function track_cells(bs,ent,ctx,cls_reqs)
       if cls_reqs and cls_reqs[e[2]] then
         local req=cls_reqs[e[2]]
         for i,u in ipairs(req.ups) do
-          if u[1]=="Var" and cur[u[2]] and cur[u[2]]~="?" then
-            req.ups[i]={"Var",cur[u[2]]}
+          local uu=unp(u)
+          if uu[1]=="Var" and cur[uu[2]] and cur[uu[2]]~="?" then
+            req.ups[i]={"Var",cur[uu[2]]}
           end
         end
       end
       return e
+    elseif k=="IfExpr" then
+      local cs={} for i,c in ipairs(e[2]) do cs[i]={tc_e(c[1],cur),tc_e(c[2],cur)} end
+      return {"IfExpr",cs,tc_e(e[3],cur)}
     elseif k=="NatExpr" then
       local es={}
       for i,u in ipairs(e[3]) do
@@ -1935,17 +2199,19 @@ local function struct_cfg(bs,ent,for_hdrs)
   local ipdom=G.pdoms(bs)
   local pre_map={}
   for hdr,fh in pairs(for_hdrs) do pre_map[fh.pre]=fh end
-  local function emit_reg(u,stop,lhdr,lexit,fst,act)
+  local function emit_reg(u,stop,lhdr,lexit,fst,act,dep)
+    dep=(dep or 0)+1
     local out={}
+    if dep>1000 then return out end
     local steps=0
     act=act or {}
-    while u and (fst or (u~=stop and not act[u])) and bs[u] do
+    while u and (fst or (u~=stop and u~=lexit and not act[u])) and bs[u] do
       fst=false
       steps=steps+1
       if steps>5000 then break end
       local fh=for_hdrs[u]
       if fh and u~=lhdr and not act[u] then
-        local bblk=emit_reg(fh.body,u,u,fh.exit,false,cset(act,u))
+        local bblk=emit_reg(fh.body,u,u,fh.exit,false,cset(act,u),dep)
         out[#out+1]={"ForNum",fh.v,fh.a,fh.b,fh.s,{"Block",bblk}}
         u=fh.exit
       elseif lps[u] and u~=lhdr and not act[u] then
@@ -1956,29 +2222,29 @@ local function struct_cfg(bs,ent,for_hdrs)
         if hb.term[1]=="Branch" and (hb.term[4]==lex or hb.term[3]==lex) then
           local cond,t_id,f_id=hb.term[2],hb.term[3],hb.term[4]
           if #hb.stmts==0 and f_id==lex and lp.body[t_id] then
-            local bblk=emit_reg(t_id,u,u,lex,false,a2)
+            local bblk=emit_reg(t_id,u,u,lex,false,a2,dep)
             out[#out+1]={"While",cond,{"Block",bblk}}
             u=lex
           elseif #hb.stmts==0 and t_id==lex and lp.body[f_id] then
-            local bblk=emit_reg(f_id,u,u,lex,false,a2)
+            local bblk=emit_reg(f_id,u,u,lex,false,a2,dep)
             out[#out+1]={"While",neg_c(cond),{"Block",bblk}}
             u=lex
           elseif f_id==lex and lp.body[t_id] then
             local body={}
             for _,s in ipairs(hb.stmts) do body[#body+1]=s end
             body[#body+1]={"If",{{neg_c(cond),{"Block",{{"Break"}}}}},false}
-            for _,s in ipairs(emit_reg(t_id,u,u,lex,false,a2)) do body[#body+1]=s end
+            for _,s in ipairs(emit_reg(t_id,u,u,lex,false,a2,dep)) do body[#body+1]=s end
             out[#out+1]={"While",{"Bool",true},{"Block",body}}
             u=lex
           elseif t_id==lex and lp.body[f_id] then
             local body={}
             for _,s in ipairs(hb.stmts) do body[#body+1]=s end
             body[#body+1]={"If",{{cond,{"Block",{{"Break"}}}}},false}
-            for _,s in ipairs(emit_reg(f_id,u,u,lex,false,a2)) do body[#body+1]=s end
+            for _,s in ipairs(emit_reg(f_id,u,u,lex,false,a2,dep)) do body[#body+1]=s end
             out[#out+1]={"While",{"Bool",true},{"Block",body}}
             u=lex
           else
-            local body=emit_reg(u,u,u,lex,true,a2)
+            local body=emit_reg(u,u,u,lex,true,a2,dep)
             out[#out+1]={"While",{"Bool",true},{"Block",body}}
             u=lex
           end
@@ -1995,12 +2261,12 @@ local function struct_cfg(bs,ent,for_hdrs)
           if rep_b then
             local sv=rep_b.lat.term
             rep_b.lat.term={"Jmp",u}
-            local bblk=emit_reg(u,u,u,lex,true,a2)
+            local bblk=emit_reg(u,u,u,lex,true,a2,dep)
             rep_b.lat.term=sv
             out[#out+1]={"Repeat",{"Block",bblk},rep_b.cond}
             u=lex
           else
-            local body=emit_reg(u,u,u,lex,true,a2)
+            local body=emit_reg(u,u,u,lex,true,a2,dep)
             out[#out+1]={"While",{"Bool",true},{"Block",body}}
             u=lex
           end
@@ -2010,7 +2276,7 @@ local function struct_cfg(bs,ent,for_hdrs)
         for _,s in ipairs(b.stmts) do out[#out+1]=s end
         if pre_map[u] then
           local fh=pre_map[u]
-          local bblk=emit_reg(fh.body,fh.exit==stop and stop or b.term[2],b.term[2],fh.exit,false,cset(act,b.term[2]))
+          local bblk=emit_reg(fh.body,fh.exit==stop and stop or b.term[2],b.term[2],fh.exit,false,cset(act,b.term[2]),dep)
           out[#out+1]={"ForNum",fh.v,fh.a,fh.b,fh.s,{"Block",bblk}}
           u=fh.exit
         else
@@ -2037,16 +2303,16 @@ local function struct_cfg(bs,ent,for_hdrs)
               local m=ipdom[u]
               if m=="__EXIT__" or not m or not bs[m] then m=stop end
               if m==t_id then
-                local eb=emit_reg(f_id,m,lhdr,lexit,false,act)
+                local eb=emit_reg(f_id,m,lhdr,lexit,false,act,dep)
                 out[#out+1]={"If",{{neg_c(cond),{"Block",eb}}},false}
                 u=m
               elseif m==f_id then
-                local tb=emit_reg(t_id,m,lhdr,lexit,false,act)
+                local tb=emit_reg(t_id,m,lhdr,lexit,false,act,dep)
                 out[#out+1]={"If",{{cond,{"Block",tb}}},false}
                 u=m
               else
-                local tb=emit_reg(t_id,m,lhdr,lexit,false,act)
-                local eb=emit_reg(f_id,m,lhdr,lexit,false,act)
+                local tb=emit_reg(t_id,m,lhdr,lexit,false,act,dep)
+                local eb=emit_reg(f_id,m,lhdr,lexit,false,act,dep)
                 local brs={{cond,{"Block",tb}}}
                 if #eb==1 and eb[1][1]=="If" then
                   local sub=eb[1]
@@ -2131,6 +2397,12 @@ ext_closure=function(ctx,pc0,ps,va,upv_map)
         local es={}
         for i,u in ipairs(e[3]) do es[i]=r_upv_e(u) end
         return {"NatExpr",e[2],es,r_upv_e(e[4])}
+      elseif k=="Func" or k=="Block" or k=="IfExpr" then
+        local r={k} for i=2,#e do r[i]=type(e[i])=="table" and r_upv_e(e[i]) or e[i] end return r
+      elseif type(k)~="string" then
+        local r={} for i=1,#e do r[i]=type(e[i])=="table" and r_upv_e(e[i]) or e[i] end return r
+      elseif k=="Assign" or k=="LocalVar" or k=="CallStmt" or k=="Return" or k=="If" or k=="While" or k=="Repeat" or k=="Do" or k=="ForNum" or k=="ForIn" then
+        local r={k} for i=2,#e do r[i]=type(e[i])=="table" and r_upv_e(e[i]) or e[i] end return r
       end
       return e
     end
@@ -2214,10 +2486,16 @@ ext_closure=function(ctx,pc0,ps,va,upv_map)
   for _,req in ipairs(cls_reqs) do
     for i,u in ipairs(req.ups) do req.ups[i]=sub_nat_t(u) end
   end
-  local sv_cls=ctx.cls_reqs
+  local cap_cells={}
+  for _,req in ipairs(cls_reqs) do
+    for _,u in ipairs(req.ups) do extract_vars_e(u,cap_cells,cls_reqs) end
+  end
+  local sv_cls,sv_cap=ctx.cls_reqs,ctx.cap_cells
   ctx.cls_reqs=cls_reqs
+  ctx.cap_cells=cap_cells
   bs=opt_cfg(bs,pc0,locs,ctx)
   ctx.cls_reqs=sv_cls
+  ctx.cap_cells=sv_cap
   if ctx.env_vars and next(ctx.env_vars) then
     local function re_e(e,sh)
       if type(e)~="table" then return e end
@@ -2284,6 +2562,81 @@ ext_closure=function(ctx,pc0,ps,va,upv_map)
     end
     for _,req in ipairs(cls_reqs) do
       for i,u in ipairs(req.ups) do req.ups[i]=re_e(u,sh0) end
+    end
+  end
+  local sv_pa=ctx.p_args
+  if not upv_map and ctx.fwds and #ctx.fwds>0 then
+    local fw_vs={}
+    for _,f in ipairs(ctx.fwds) do
+      A.walk(f,function(x) if x[1]=="Var" then fw_vs[x[2]]=true end end)
+    end
+    local rmap={}
+    for nm,_ in pairs(locs) do
+      if fw_vs[nm] then
+        local rn="_cl_"..nm
+        while locs[rn] or fw_vs[rn] or rmap[rn] do rn=rn.."_" end
+        rmap[nm]=rn
+      end
+    end
+    if ctx.p_args and fw_vs[ctx.p_args] and not rmap[ctx.p_args] then
+      local rn="_cl_"..ctx.p_args
+      while locs[rn] or fw_vs[rn] do rn=rn.."_" end
+      rmap[ctx.p_args]=rn
+    end
+    if next(rmap) then
+      for k,v in pairs(rmap) do locs[k]=nil locs[v]=true end
+      if rmap[ctx.p_args] then ctx.p_args=rmap[ctx.p_args] end
+      local function ren_l(e,sh)
+        if type(e)~="table" then return e end
+        local k=e[1]
+        if k=="Var" then return (not (sh and sh[e[2]]) and rmap[e[2]]) and {"Var",rmap[e[2]]} or e
+        elseif k=="Func" then
+          local s2={} if sh then for x,y in pairs(sh) do s2[x]=y end end
+          for _,p in ipairs(e[2]) do s2[p]=true end
+          return {"Func",e[2],e[3],ren_l(e[4],s2)}
+        elseif k=="LocalFunc" then
+          local s2={} if sh then for x,y in pairs(sh) do s2[x]=y end end
+          s2[e[2]]=true for _,p in ipairs(e[3]) do s2[p]=true end
+          return {"LocalFunc",e[2],e[3],e[4],ren_l(e[5],s2)}
+        elseif k=="Block" then
+          local s2={} if sh then for x,y in pairs(sh) do s2[x]=y end end
+          local ns={}
+          for i,st in ipairs(e[2]) do
+            ns[i]=ren_l(st,s2)
+            if st[1]=="LocalVar" then for _,nm in ipairs(st[2]) do s2[nm]=true end
+            elseif st[1]=="LocalFunc" then s2[st[2]]=true end
+          end
+          return {"Block",ns}
+        elseif k=="ForNum" then
+          local s2={} if sh then for x,y in pairs(sh) do s2[x]=y end end
+          s2[e[2]]=true
+          return {"ForNum",e[2],ren_l(e[3],sh),ren_l(e[4],sh),e[5] and ren_l(e[5],sh) or false,ren_l(e[6],s2)}
+        elseif k=="ForIn" then
+          local s2={} if sh then for x,y in pairs(sh) do s2[x]=y end end
+          for _,v in ipairs(e[2]) do s2[v]=true end
+          local es={} for i,x in ipairs(e[3]) do es[i]=ren_l(x,sh) end
+          return {"ForIn",e[2],es,ren_l(e[4],s2)}
+        elseif k=="Repeat" then
+          local nb=ren_l(e[2],sh)
+          local s2={} if sh then for x,y in pairs(sh) do s2[x]=y end end
+          for _,st in ipairs(nb[2]) do
+            if st[1]=="LocalVar" then for _,nm in ipairs(st[2]) do s2[nm]=true end
+            elseif st[1]=="LocalFunc" then s2[st[2]]=true end
+          end
+          return {"Repeat",nb,ren_l(e[3],s2)}
+        end
+        if type(k)~="string" then
+          local r={} for i=1,#e do r[i]=type(e[i])=="table" and ren_l(e[i],sh) or e[i] end return r
+        end
+        local r={k} for i=2,#e do r[i]=type(e[i])=="table" and ren_l(e[i],sh) or e[i] end return r
+      end
+      for _,b in pairs(bs) do
+        for i,s in ipairs(b.stmts) do b.stmts[i]=ren_l(s,nil) end
+        b.term=ren_l(b.term,nil)
+      end
+      for _,req in ipairs(cls_reqs) do
+        for i,u in ipairs(req.ups) do req.ups[i]=ren_l(u,nil) end
+      end
     end
   end
   local did_fw=not upv_map and ((ctx.fwds and #ctx.fwds>0) or va)
@@ -2388,7 +2741,7 @@ ext_closure=function(ctx,pc0,ps,va,upv_map)
     end
     for _,b in pairs(bs) do
       for _,s in ipairs(b.stmts) do su(s) end
-      su(b.term)
+      if b.term[1]=="Branch" then su(b.term[2]) elseif b.term[1]=="Ret" then for _,e in ipairs(b.term[2]) do su(e) end end
     end
     for _,req in ipairs(cls_reqs) do
       for _,u in ipairs(req.ups) do su(u) end
@@ -2619,12 +2972,12 @@ ext_closure=function(ctx,pc0,ps,va,upv_map)
     return {"Block",ns}
   end
   blk=ins_loc_b(blk,{},{})
-  if ctx.pack_fn and not (ctx.mf_locs and ctx.mf_locs[ctx.pack_fn]) then
-    local pk=ctx.pack_fn
+  if ctx.pack_fn then
+    local pks=ctx.pack_fns
     local function rw_pk(e,sh)
       if type(e)~="table" then return e end
       local k=e[1]
-      if k=="Call" and not sh and unp(e[2])[1]=="Var" and unp(e[2])[2]==pk then
+      if k=="Call" and unp(e[2])[1]=="Var" and pks[unp(e[2])[2]] and not (sh and sh[unp(e[2])[2]]) and not (ctx.mf_locs and ctx.mf_locs[unp(e[2])[2]]) then
         local args={}
         for i,a in ipairs(e[3]) do args[i]=rw_pk(a,sh) end
         if #args==0 then return {"Tbl",{{"F","n",{"Num",0}}}} end
@@ -2638,21 +2991,38 @@ ext_closure=function(ctx,pc0,ps,va,upv_map)
         local ns={}
         for i,st in ipairs(e[2]) do
           ns[i]=rw_pk(st,sh2)
-          if st[1]=="LocalVar" then for _,nm in ipairs(st[2]) do if nm==pk then sh2=true end end
-          elseif st[1]=="LocalFunc" and st[2]==pk then sh2=true end
+          if st[1]=="LocalVar" then
+            local hp=false
+            for _,nm in ipairs(st[2]) do if pks[nm] then hp=true end end
+            if hp then
+              local s2={} if sh2 then for q,v in pairs(sh2) do s2[q]=v end end
+              for _,nm in ipairs(st[2]) do if pks[nm] then s2[nm]=true end end
+              sh2=s2
+            end
+          elseif st[1]=="LocalFunc" and pks[st[2]] then
+            local s2={} if sh2 then for q,v in pairs(sh2) do s2[q]=v end end
+            s2[st[2]]=true sh2=s2
+          end
         end
         return {"Block",ns}
       elseif k=="Func" then
+        local hp=false
+        for _,p in ipairs(e[2]) do if pks[p] then hp=true end end
         local sh2=sh
-        for _,p in ipairs(e[2]) do if p==pk then sh2=true end end
+        if hp then
+          local s2={} if sh2 then for q,v in pairs(sh2) do s2[q]=v end end
+          for _,p in ipairs(e[2]) do if pks[p] then s2[p]=true end end
+          sh2=s2
+        end
         return {"Func",e[2],e[3],rw_pk(e[4],sh2)}
       elseif type(k)~="string" then
         local r={} for i=1,#e do r[i]=rw_pk(e[i],sh) end return r
       end
       local r={k} for i=2,#e do r[i]=rw_pk(e[i],sh) end return r
     end
-    blk=rw_pk(blk,false)
+    blk=rw_pk(blk,nil)
   end
+  ctx.p_args=sv_pa
   if #cls_reqs>0 then
     local cls_fn={}
     for cid,req in ipairs(cls_reqs) do
@@ -2776,10 +3146,29 @@ local function unwrap_cff_call(e)
   end
   return {"Func",sps,va,b}
 end
-function M.inv_cff(ast,fold)
+function M.inv_cff(ast,fold,max_it)
   local chg=false
   local function rw_b(b)
     local ns={}
+    local benv,bdef={},{}
+    local function res_v(e)
+      local u=unp(e)
+      local seen={}
+      while u[1]=="Var" and benv[u[2]] and not seen[u[2]] do
+        seen[u[2]]=true
+        u=unp(benv[u[2]])
+      end
+      return u
+    end
+    local function add_defs(e,out)
+      local u=unp(e)
+      local seen={}
+      while u[1]=="Var" and not seen[u[2]] do
+        seen[u[2]]=true
+        if bdef[u[2]] then for _,di in ipairs(bdef[u[2]]) do out[#out+1]=di end end
+        if benv[u[2]] then u=unp(benv[u[2]]) else break end
+      end
+    end
     local function rw_e(e)
       local k=e[1]
       if k=="Call" then
@@ -2810,15 +3199,31 @@ function M.inv_cff(ast,fold)
       end
       return e
     end
+    local rm_ns={}
     for _,s in ipairs(b[2]) do
       local k=s[1]
       if k=="Return" and #s[2]==1 then
-        local r=unwrap_cff_call(s[2][1])
+        local c0=unp(s[2][1])
+        local r=unwrap_cff_call(c0)
+        local used_env={}
+        if not r and c0[1]=="Call" and unp(c0[2])[1]=="Var" then
+          local fv=res_v(c0[2])
+          if fv[1]=="Func" then
+            local ra={}
+            for j,a in ipairs(c0[3]) do ra[j]=res_v(a) end
+            r=unwrap_cff_call({"Call",fv,ra})
+            if r then
+              add_defs(c0[2],used_env)
+            end
+          end
+        end
         if r and r[1]=="Block" then
           chg=true
+          for _,ui in ipairs(used_env) do rm_ns[ui]=true end
           for _,bs in ipairs(r[2]) do ns[#ns+1]=bs end
         elseif r and r[1]=="Func" then
           chg=true
+          for _,ui in ipairs(used_env) do rm_ns[ui]=true end
           ns[#ns+1]={"Return",{r}}
         else
           ns[#ns+1]={"Return",{rw_e(s[2][1])}}
@@ -2831,7 +3236,10 @@ function M.inv_cff(ast,fold)
         else
           ns[#ns+1]={"CallStmt",rw_e(s[2])}
         end
-      elseif k=="LocalFunc" then ns[#ns+1]={"LocalFunc",s[2],s[3],s[4],rw_b(s[5])}
+      elseif k=="LocalFunc" then
+        ns[#ns+1]={"LocalFunc",s[2],s[3],s[4],rw_b(s[5])}
+        benv[s[2]]={"Func",s[3],s[4],s[5]}
+        bdef[s[2]]={#ns}
       elseif k=="FuncStmt" then ns[#ns+1]={"FuncStmt",rw_e(s[2]),s[3],s[4],s[5],rw_b(s[6])}
       elseif k=="Do" then ns[#ns+1]={"Do",rw_b(s[2])}
       elseif k=="While" then ns[#ns+1]={"While",rw_e(s[2]),rw_b(s[3])}
@@ -2839,6 +3247,13 @@ function M.inv_cff(ast,fold)
       elseif k=="If" then
         local cs={} for i,c in ipairs(s[2]) do cs[i]={rw_e(c[1]),rw_b(c[2])} end
         ns[#ns+1]={"If",cs,s[3] and rw_b(s[3]) or false}
+        if #s[2]==1 and not s[3] and #s[2][1][2][2]==1 then
+          local is1=s[2][1][2][2][1]
+          if is1[1]=="Assign" and #is1[2]==1 and #is1[3]==1 and unp(is1[2][1])[1]=="Var" then
+            local nm=unp(is1[2][1])[2]
+            if benv[nm] then benv[nm]={"Bin","or",benv[nm],res_v(is1[3][1])} end
+          end
+        end
       elseif k=="ForNum" then ns[#ns+1]={"ForNum",s[2],rw_e(s[3]),rw_e(s[4]),s[5] and rw_e(s[5]) or false,rw_b(s[6])}
       elseif k=="ForIn" then
         local es={} for i,e in ipairs(s[3]) do es[i]=rw_e(e) end
@@ -2846,17 +3261,43 @@ function M.inv_cff(ast,fold)
       elseif k=="LocalVar" then
         local vs={} for i,v in ipairs(s[3]) do vs[i]=rw_e(v) end
         ns[#ns+1]={"LocalVar",s[2],vs}
+        for i,nm in ipairs(s[2]) do
+          benv[nm]=vs[i] and res_v(vs[i]) or nil
+          if vs[i] then
+            local ds={#ns}
+            local ru=unp(vs[i])
+            if ru[1]=="Var" and bdef[ru[2]] then for _,di in ipairs(bdef[ru[2]]) do ds[#ds+1]=di end end
+            bdef[nm]=ds
+          else bdef[nm]=nil end
+        end
       elseif k=="Assign" then
         local ls,rs={},{}
         for i,l in ipairs(s[2]) do ls[i]=rw_e(l) end
         for i,r in ipairs(s[3]) do rs[i]=rw_e(r) end
         ns[#ns+1]={"Assign",ls,rs}
+        if #ls==#rs then
+          for i,l in ipairs(ls) do
+            if unp(l)[1]=="Var" then
+              local nm=unp(l)[2]
+              benv[nm]=res_v(rs[i])
+              local ds={#ns}
+              local ru=unp(rs[i])
+              if ru[1]=="Var" and bdef[ru[2]] then for _,di in ipairs(bdef[ru[2]]) do ds[#ds+1]=di end end
+              bdef[nm]=ds
+            end
+          end
+        end
       else ns[#ns+1]=s end
+    end
+    if next(rm_ns) then
+      local out={}
+      for i,s in ipairs(ns) do if not rm_ns[i] then out[#out+1]=s end end
+      ns=out
     end
     return {"Block",ns}
   end
   local cur=M_misc.inv_pool(fold and fold(ast) or ast)
-  for _=1,12 do
+  for _=1,(max_it or 12) do
     chg=false
     local nxt=rw_b(cur)
     if not chg then break end

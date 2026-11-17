@@ -87,15 +87,22 @@ local function unrot(arr,n,ps)
     end
   end
 end
-local function parse_lkp(t)
+local function lit_e(e,env)
+  local ok,v=lit_v(e)
+  if ok then return true,v end
+  e=unp(e)
+  if env and e[1]=="Var" and env[e[2]]~=nil then return true,env[e[2]] end
+  return false,nil
+end
+local function parse_lkp(t,env)
   t=unp(t)
   if t[1]~="Tbl" then return nil end
   local mp,cnt={},0
   for _,f in ipairs(t[2]) do
     local k,v
-    if f[1]=="F" then k=f[2] local ok,nv=lit_v(f[3]) if not ok or type(nv)~="number" then return nil end v=nv
+    if f[1]=="F" then k=f[2] local ok,nv=lit_e(f[3],env) if not ok or type(nv)~="number" then return nil end v=nv
     elseif f[1]=="I" then
-      local ok1,kv=lit_v(f[2]) local ok2,nv=lit_v(f[3])
+      local ok1,kv=lit_e(f[2],env) local ok2,nv=lit_e(f[3],env)
       if not ok1 or not ok2 or type(kv)~="string" or type(nv)~="number" then return nil end
       k,v=kv,nv
     else return nil end
@@ -106,6 +113,36 @@ local function parse_lkp(t)
   return nil
 end
 local function parse_rot(s,an)
+  if s[1]=="Do" then
+    local bs=s[2][2]
+    local ps={}
+    local i=1
+    local lv,rv
+    while i<=#bs-1 do
+      local s1,s2=bs[i],bs[i+1]
+      local l0,r0
+      if s1[1]=="LocalVar" and #s1[2]==2 and #s1[3]==2 then
+        local ok1,v1=lit_v(s1[3][1]) local ok2,v2=lit_v(s1[3][2])
+        if ok1 and ok2 and type(v1)=="number" and type(v2)=="number" then
+          lv,rv=s1[2][1],s1[2][2]
+          l0,r0=v1,v2
+        end
+      elseif s1[1]=="Assign" and #s1[2]==2 and #s1[3]==2 and unp(s1[2][1])[1]=="Var" and unp(s1[2][2])[1]=="Var" and unp(s1[2][1])[2]==lv and unp(s1[2][2])[2]==rv then
+        local ok1,v1=lit_v(s1[3][1]) local ok2,v2=lit_v(s1[3][2])
+        if ok1 and ok2 and type(v1)=="number" and type(v2)=="number" then l0,r0=v1,v2 end
+      end
+      if l0 and s2[1]=="While" then
+        local wc=unp(s2[2])
+        if wc[1]=="Bin" and wc[2]=="<" and unp(wc[3])[1]=="Var" and unp(wc[3])[2]==lv and unp(wc[4])[1]=="Var" and unp(wc[4])[2]==rv then
+          local ref=false
+          A.walk(s2[3],function(x) if x[1]=="Var" and x[2]==an then ref=true end end)
+          if ref then ps[#ps+1]={l0,r0} i=i+2 else return nil end
+        else return nil end
+      else return nil end
+    end
+    if #ps>=2 and i>#bs then return ps end
+    return nil
+  end
   if s[1]~="ForIn" or #s[3]~=1 then return nil end
   local c=unp(s[3][1])
   if c[1]~="Call" or unp(c[2])[1]~="Var" or unp(c[2])[2]~="ipairs" or #c[3]~=1 then return nil end
@@ -533,6 +570,7 @@ end
 local function ext_mpf(blk,v64,v85)
   local p64,p85
   local cs={}
+  local cv={}
   local function h64(n)
     local hit=false
     A.walk(n,function(y)
@@ -549,21 +587,33 @@ local function ext_mpf(blk,v64,v85)
     end)
     return hit
   end
+  local function eq1(c)
+    c=unp(c)
+    if c[1]=="Bin" and c[2]=="==" then
+      local l,r=unp(c[3]),unp(c[4])
+      if r[1]=="Str" and #r[2]==1 then return r[2]
+      elseif l[1]=="Str" and #l[2]==1 then return l[2] end
+    end
+    return nil
+  end
   A.walk(blk,function(x)
-    if x[1]=="If" then
+    if x[1]=="LocalVar" or x[1]=="Assign" then
+      for i=1,math.min(#x[2],#x[3]) do
+        local nm=type(x[2][i])=="string" and x[2][i] or (unp(x[2][i])[1]=="Var" and unp(x[2][i])[2] or nil)
+        if nm then
+          local ch=eq1(x[3][i])
+          cv[nm]=ch
+        end
+      end
+    elseif x[1]=="If" then
       for _,br in ipairs(x[2]) do
         local c=unp(br[1])
-        if c[1]=="Bin" and c[2]=="==" then
-          local l,r=unp(c[3]),unp(c[4])
-          local ch
-          if r[1]=="Str" and #r[2]==1 then ch=r[2]
-          elseif l[1]=="Str" and #l[2]==1 then ch=l[2] end
-          if ch then
-            cs[#cs+1]=ch
-            local u6,u8=h64(br[2]),h85(br[2])
-            if u6 and not u8 then p64=ch
-            elseif u8 and not u6 then p85=ch end
-          end
+        local ch=eq1(c) or (c[1]=="Var" and cv[c[2]] or nil)
+        if ch then
+          cs[#cs+1]=ch
+          local u6,u8=h64(br[2]),h85(br[2])
+          if u6 and not u8 then p64=ch
+          elseif u8 and not u6 then p85=ch end
         end
       end
     end
@@ -681,15 +731,29 @@ end
 local function find_cff_ca(sts)
   local n=#sts
   local arrs,wraps={},{}
+  local envs={}
+  local cur_e={}
+  local function clr_w(nd)
+    A.walk(nd,function(x)
+      if x[1]=="Assign" then
+        for _,l in ipairs(x[2]) do if unp(l)[1]=="Var" then cur_e[unp(l)[2]]=nil end end
+      elseif x[1]=="LocalVar" then
+        for _,nm in ipairs(x[2]) do cur_e[nm]=nil end
+      elseif x[1]=="ForNum" then cur_e[x[2]]=nil
+      elseif x[1]=="ForIn" then for _,nm in ipairs(x[2]) do cur_e[nm]=nil end end
+    end)
+  end
   for i=1,n do
     local s=sts[i]
+    local snap={} for k,v in pairs(cur_e) do snap[k]=v end
+    envs[i]=snap
     local an,tb=lhs1(s)
     if an and tb[1]=="Tbl" and #tb[2]>0 then
       local ok=true
       local raw={}
       for j,f in ipairs(tb[2]) do
         if f[1]~="V" then ok=false break end
-        local ov,vv=lit_v(f[2])
+        local ov,vv=lit_e(f[2],snap)
         if not ov then ok=false break end
         raw[j]=vv
       end
@@ -711,6 +775,21 @@ local function find_cff_ca(sts)
       end
     end
     if wn and wfn and fn_a then wraps[#wraps+1]={i,wn,fn_a,wfn} end
+    if s[1]=="LocalVar" or s[1]=="Assign" then
+      for j,lhs in ipairs(s[2]) do
+        local nm=s[1]=="LocalVar" and lhs or (unp(lhs)[1]=="Var" and unp(lhs)[2] or nil)
+        if nm then
+          local rh=s[3][j]
+          local ok,v
+          if rh then ok,v=lit_e(rh,snap) end
+          if ok then cur_e[nm]=v else cur_e[nm]=nil end
+        end
+      end
+    elseif s[1]=="LocalFunc" then
+      cur_e[s[2]]=nil
+    else
+      clr_w(s)
+    end
   end
   for _,w in ipairs(wraps) do
     local idx_w,wn,an,wfn=w[1],w[2],w[3],w[4]
@@ -797,65 +876,91 @@ local function find_cff_ca(sts)
       end
       if not t64 and not t85 then
         for k=1,n do
-          if not rm_i[k] and sts[k][1]=="ForNum" then
-            local sk=sts[k]
-            local s0=lit_v(u_for(sk[3]))
-            local sv0,svv=lit_v(u_for(sk[3]))
-            local eb=u_for(sk[4])
-            if sv0 and svv==1 then
-              local arr_v
-              local di={[k]=true}
-              local dv={}
-              if eb[1]=="Un" and eb[2]=="#" and unp(eb[3])[1]=="Var" then
-                arr_v=unp(eb[3])[2]
-              elseif eb[1]=="Var" then
-                for d=k-1,1,-1 do
+          local sk=sts[k]
+          local is_fn=(not rm_i[k] and sk[1]=="ForNum")
+          local is_wh=(not rm_i[k] and sk[1]=="While" and unp(sk[2])[1]=="Bool" and unp(sk[2])[2]==true)
+          if is_fn or is_wh then
+            local arr_v
+            local di={[k]=true}
+            local dv={}
+            local lp_b
+            if is_fn then
+              local sv0,svv=lit_v(u_for(sk[3]))
+              local eb=u_for(sk[4])
+              lp_b=sk[6]
+              if sv0 and svv==1 then
+                if eb[1]=="Un" and eb[2]=="#" and unp(eb[3])[1]=="Var" then
+                  arr_v=unp(eb[3])[2]
+                elseif eb[1]=="Var" then
+                  for d=k-1,1,-1 do
+                    if not rm_i[d] then
+                      local ln,rh=lhs1(sts[d])
+                      if ln==eb[2] then
+                        if rh[1]=="Un" and rh[2]=="#" and unp(rh[3])[1]=="Var" then
+                          arr_v=unp(rh[3])[2]
+                          local tail={} for m=d+1,n do if not rm_i[m] and not di[m] then tail[#tail+1]=sts[m] end end
+                          if not live_use(ln,tail) then di[d]=true dv[ln]=true end
+                        end
+                        break
+                      end
+                    end
+                  end
+                end
+              end
+            else
+              lp_b=sk[3]
+              local has_str,has_m=false,false
+              A.walk(sk[3],function(x)
+                if x[1]=="Str" and x[2]=="string" then has_str=true
+                elseif x[1]=="Num" and (x[2]==64 or x[2]==85 or x[2]==65536 or x[2]==16777216) then has_m=true end
+              end)
+              if has_str and has_m then
+                for d=k-1,math.max(1,k-8),-1 do
                   if not rm_i[d] then
                     local ln,rh=lhs1(sts[d])
-                    if ln==eb[2] then
-                      if rh[1]=="Un" and rh[2]=="#" and unp(rh[3])[1]=="Var" then
-                        arr_v=unp(rh[3])[2]
-                        local tail={} for m=d+1,n do if not rm_i[m] and not di[m] then tail[#tail+1]=sts[m] end end
-                        if not live_use(ln,tail) then di[d]=true dv[ln]=true end
-                      end
+                    if ln and rh[1]=="Un" and rh[2]=="#" and unp(rh[3])[1]=="Var" then
+                      arr_v=unp(rh[3])[2]
+                      local tail={} for m=d+1,n do if not rm_i[m] and not di[m] then tail[#tail+1]=sts[m] end end
+                      if not live_use(ln,tail) then di[d]=true dv[ln]=true end
                       break
                     end
                   end
                 end
               end
-              if arr_v then
-                local has_a=(arr_v==an)
-                local t64k,t85k,v64,v85
-                A.walk(sk,function(x)
-                  local mp,cnt=parse_lkp(x)
-                  if cnt==64 then t64k=mp elseif cnt==85 then t85k=mp end
-                end)
-                local need=vars_f(sk)
-                for d=k-1,1,-1 do
-                  if not rm_i[d] then
-                    local ln,rh=lhs1(sts[d])
-                    if ln and need[ln] then
-                      local mp,cnt=parse_lkp(rh)
-                      local ia=(rh[1]=="Var" and rh[2]==an)
-                      if mp or ia or is_ca_hlp(rh) then
-                        local tail={} for m=d+1,n do if not rm_i[m] and not di[m] then tail[#tail+1]=sts[m] end end
-                        if not live_use(ln,tail) then
-                          di[d]=true dv[ln]=true
-                          for u,_ in pairs(vars_f(rh)) do need[u]=true end
-                          if ia then has_a=true end
-                          if cnt==64 then t64k,v64=mp,ln elseif cnt==85 then t85k,v85=mp,ln end
-                        end
+            end
+            if arr_v then
+              local has_a=(arr_v==an)
+              local t64k,t85k,v64,v85
+              A.walk(sk,function(x)
+                local mp,cnt=parse_lkp(x,envs[k])
+                if cnt==64 then t64k=mp elseif cnt==85 then t85k=mp end
+              end)
+              local need=vars_f(sk)
+              for d=k-1,1,-1 do
+                if not rm_i[d] then
+                  local ln,rh=lhs1(sts[d])
+                  if ln and need[ln] then
+                    local mp,cnt=parse_lkp(rh,envs[d])
+                    local ia=(rh[1]=="Var" and rh[2]==an)
+                    local is_hlp=is_ca_hlp(rh) or (rh[1]=="Var" and need[rh[2]])
+                    if mp or ia or is_hlp then
+                      local tail={} for m=d+1,n do if not rm_i[m] and not di[m] then tail[#tail+1]=sts[m] end end
+                      if not live_use(ln,tail) then
+                        di[d]=true dv[ln]=true
+                        for u,_ in pairs(vars_f(rh)) do need[u]=true end
+                        if ia then has_a=true end
+                        if cnt==64 then t64k,v64=mp,ln elseif cnt==85 then t85k,v85=mp,ln end
                       end
                     end
                   end
                 end
-                if has_a and (t64k or t85k) then
-                  t64,t85=t64k,t85k
-                  p64,p85=ext_mpf(sk[6],v64,v85)
-                  for d,_ in pairs(di) do rm_i[d]=true end
-                  for v,_ in pairs(dv) do rm_v[v]=true end
-                  break
-                end
+              end
+              if has_a and (t64k or t85k) then
+                t64,t85=t64k,t85k
+                p64,p85=ext_mpf(lp_b,v64,v85)
+                for d,_ in pairs(di) do rm_i[d]=true end
+                for v,_ in pairs(dv) do rm_v[v]=true end
+                break
               end
             end
           end

@@ -1,5 +1,6 @@
 local A=require("src.frontend.ast")
 local VM=require("src.passes.vm")
+local VCS=require("src.passes.vm_cs")
 local OPS=require("src.ir.ops")
 local unp,eq=A.unp,A.eq
 local BIN,UN=OPS.BIN,OPS.UN
@@ -1388,11 +1389,16 @@ end
 function M.inv_vm(ast,kgv)
   local function lft(b)
     local ok,info=pcall(VM.ext_vm,b)
-    if not ok or not info then return nil end
-    if not vm_here(b) then return nil end
+    local ld
+    if ok and info then
+      if not vm_here(b) then return nil end
+      ld=M.lift_proto(info.proto,{},true,nil,kgv)
+    else
+      ld=VCS.lift_cs(b)
+    end
+    if not ld then return nil end
     local wm={}
     for _,st in ipairs(b[2]) do if is_wm_set(st) then wm[#wm+1]=st end end
-    local ld=M.lift_proto(info.proto,{},true,nil,kgv)
     if #wm>0 then
       local out={}
       for _,s in ipairs(wm) do out[#out+1]=s end

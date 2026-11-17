@@ -87,13 +87,13 @@ local function ps(fn,...)
 end
 function M.deobf_node(ast)
   local a=ast
-  for _=1,6 do
+  for _=1,12 do
     local p=a
     a=ps(F.fold,a)
     a=ps(MS.inv_misc,a,F.fold,false)
     a=ps(MS.inv_pool,a)
     a=ps(CA.inv_ca,a)
-    a=ps(CF.inv_cff,a,F.fold)
+    a=ps(CF.inv_cff,a,F.fold,1)
     a=ps(EN.inv_enc,a)
     a=ps(MS.inv_pool,a)
     a=ps(VL.inv_vm,a,true)

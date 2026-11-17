@@ -122,6 +122,10 @@ local function eval_role(e,env)
   local k=e[1]
   if k=="Var" then return env[e[2]] end
   if k=="Num" and e[2]==1 then return {"Num1"} end
+  if k=="Field" then
+    local b=eval_role(e[2],env)
+    if b and b[1]=="P" then return {"PF",e[3]} end
+  end
   if k=="Idx" then
     local b=eval_role(e[2],env)
     local ix=unp(e[3])
@@ -381,16 +385,25 @@ local function classify_leaf(sts,env,nrm)
     end
     return nil
   end
+  local function idx_fk(e)
+    e=unp(e)
+    if e[1]=="Idx" then return e[2],e[3] end
+    if e[1]=="Field" then return e[2],{"Str",e[3]} end
+    return nil,nil
+  end
+  local function is_ck(k)
+    return (is_int(k) and k<0) or k=="n"
+  end
   local function has_unpack(c)
     local hit
     A.walk(c,function(x)
       if x[1]=="Call" and #x[3]==3 then
         local a2=unp(x[3][2])
         if a2[1]=="Num" and a2[2]==1 then
-          local ix=unp(x[3][3])
-          if ix[1]=="Idx" then
-            local ok,kv=lit(ix[3])
-            if ok and is_int(kv) and kv<0 then hit=kv end
+          local _,kx=idx_fk(x[3][3])
+          if kx then
+            local ok,kv=lit(kx)
+            if ok and is_ck(kv) then hit=kv end
           end
         end
       end
@@ -403,10 +416,10 @@ local function classify_leaf(sts,env,nrm)
       if x[1]=="Call" and #x[3]==3 then
         local a2=unp(x[3][2])
         if a2[1]=="Num" and a2[2]==1 then
-          local ix=unp(x[3][3])
-          if ix[1]=="Idx" then
-            local ok,kv=lit(ix[3])
-            if ok and is_int(kv) and kv<0 then hit=var_nm(ix[2]) end
+          local b,kx=idx_fk(x[3][3])
+          if b and kx then
+            local ok,kv=lit(kx)
+            if ok and is_ck(kv) then hit=var_nm(b) end
           end
         end
       end
@@ -630,10 +643,12 @@ local function classify_leaf(sts,env,nrm)
   local a0,v0=asg1(sts[1])
   if a0 then
     local r0=unp(v0)
-    if r0[1]=="Tbl" and #r0[2]==1 and r0[2][1][1]=="I" then
-      local okk,k0=lit(r0[2][1][2])
-      local okv,vv0=lit(r0[2][1][3])
-      if okk and okv and is_int(k0) and k0<0 and vv0==0 and sts[#sts][1]=="Assign" then
+    if r0[1]=="Tbl" and #r0[2]==1 and (r0[2][1][1]=="I" or r0[2][1][1]=="F") then
+      local f0=r0[2][1]
+      local okk,k0,okv,vv0
+      if f0[1]=="F" then okk,k0=true,f0[2] okv,vv0=lit(f0[3])
+      else okk,k0=lit(f0[2]) okv,vv0=lit(f0[3]) end
+      if okk and okv and is_ck(k0) and vv0==0 and sts[#sts][1]=="Assign" then
         local sa=is_r_idx(sts[#sts][2][1])
         local ip_s,sc_s
         A.walk({"Block",sts},function(x)
@@ -650,19 +665,20 @@ local function classify_leaf(sts,env,nrm)
         if sa and ip_s and sc_s then return "ARGS",{a=sa,b=ip_s,c=sc_s,ck=k0} end
       end
     end
-    if r0[1]=="Idx" then
-      local b0=unp(r0[2])
-      if b0[1]=="Idx" then
-        local pb=rl(b0[2])
-        local okc,k_ch=lit(b0[3])
+    local r0b,r0k=idx_fk(r0)
+    if r0b and r0k then
+      local b0b,b0k=idx_fk(r0b)
+      if b0b and b0k then
+        local pb=rl(b0b)
+        local okc,k_ch=lit(b0k)
         if pb and pb[1]=="P" and okc and k_ch then
-          local sb=slot(r0[3])
+          local sb=slot(r0k)
           local k_cap
           A.walk({"Block",sts},function(x)
             if x[1]=="Un" and x[2]=="#" then
-              local ix=unp(x[3])
-              if ix[1]=="Idx" then
-                local okp,kp=lit(ix[3])
+              local _,kx=idx_fk(x[3])
+              if kx then
+                local okp,kp=lit(kx)
                 if okp and kp then k_cap=kp end
               end
             end
@@ -682,17 +698,17 @@ local function classify_leaf(sts,env,nrm)
           local s=sts[i]
           local an,av=asg1(s)
           if an then
-            local ix=unp(av)
-            if ix[1]=="Idx" and var_nm(ix[2])==a0 then
-              local okk,kv=lit(ix[3])
-              if okk and is_int(kv) and kv<0 then ck=kv end
+            local ib,kx=idx_fk(av)
+            if ib and kx and var_nm(ib)==a0 then
+              local okk,kv=lit(kx)
+              if okk and is_ck(kv) then ck=kv end
             end
           elseif s[1]=="ForNum" then
             if not ck then
-              local bd=unp(s[4])
-              if bd[1]=="Idx" and var_nm(bd[2])==a0 then
-                local okk,kv=lit(bd[3])
-                if okk and is_int(kv) and kv<0 then ck=kv end
+              local ib,kx=idx_fk(s[4])
+              if ib and kx and var_nm(ib)==a0 then
+                local okk,kv=lit(kx)
+                if okk and is_ck(kv) then ck=kv end
               end
             end
             if ck then
@@ -864,15 +880,67 @@ function M.dec_proto(rp,fs,ops,opx)
     maxRegister=rp[fs.maxRegister],children=chs
   }
 end
+local function lit_tbl(t)
+  t=unp(t)
+  local o,v=lit(t)
+  if o then return true,v end
+  if t[1]~="Tbl" then return false,nil end
+  local res,ai={},1
+  for _,f in ipairs(t[2]) do
+    if f[1]=="V" then
+      local ok,fv=lit_tbl(f[2])
+      if not ok then return false,nil end
+      res[ai]=fv ai=ai+1
+    elseif f[1]=="F" then
+      local ok,fv=lit_tbl(f[3])
+      if not ok then return false,nil end
+      res[f[2]]=fv
+    else
+      local ok1,fk=lit(f[2])
+      local ok2,fv=lit_tbl(f[3])
+      if not ok1 or not ok2 or fk==nil then return false,nil end
+      res[fk]=fv
+    end
+  end
+  return true,res
+end
+local function find_dir_vm(ast)
+  local out
+  A.walk(ast,function(n)
+    if out then return end
+    if n[1]=="Call" and #n[3]>=1 then
+      for _,arg in ipairs(n[3]) do
+        local u=unp(arg)
+        if u[1]=="Tbl" and #u[2]>=1 and u[2][1][1]=="V" then
+          local p0=unp(u[2][1][2])
+          if p0[1]=="Tbl" and #p0[2]>=5 then
+            local ok,tv=lit_tbl(u)
+            if ok and type(tv)=="table" and type(tv[1])=="table" then
+              out={n,tv}
+              return
+            end
+          end
+        end
+      end
+    end
+  end)
+  return out
+end
 function M.ext_vm(ast)
-  local rbs=find_rb_calls(ast)
-  if #rbs==0 then return nil end
-  local rb=rbs[#rbs]
-  local rb_call,sh_tbl,cnt,rt=rb[1],rb[2],rb[3],rb[4]
   local loops=find_loop_info(ast)
   if #loops==0 then return nil end
   local loop_fn,env,leaves=loops[1][1],loops[1][2],loops[1][3]
-  local root_tbl=M.dec_shards(sh_tbl,cnt,rt)
+  local rbs=find_rb_calls(ast)
+  local rb_call,root_tbl
+  if #rbs>0 then
+    local rb=rbs[#rbs]
+    rb_call=rb[1]
+    root_tbl=M.dec_shards(rb[2],rb[3],rb[4])
+  else
+    local dv=find_dir_vm(ast)
+    if not dv then return nil end
+    rb_call,root_tbl=dv[1],dv[2]
+  end
   local root_p=root_tbl[1]
   local ops,clear_nil,slots={}, {}, {a={},b={},c={},d={}}
   local meta={code=env.__k_code}
