@@ -166,6 +166,18 @@ print(i,res,_G.a==nil)]]
 	src_non_roblox_lua = function()
 		return rd("tests/not/source/non_roblox/lua.lua")
 	end,
+	single_str = function()
+		return 'print("this is a test")'
+	end,
+	no_str = function()
+		return "print(88*88)"
+	end,
+	single_ret = function()
+		return 'local x=10 local function add(a,b) return a+b end print("sum",add(x,32))'
+	end,
+	closure_at = function()
+		return 'local f=function() return "real" end print(tostring(f):find("function")~=nil,f())'
+	end,
 	synth_expr = genExpr,
 	synth_cfg = genCfg,
 	synth_upval = genUpv,
@@ -253,11 +265,77 @@ local function parseOk(code, ver)
 	return ok, err
 end
 
+local function withVer(ref, fn)
+	if not ref or ref == "HEAD" or ref == "master" then return true, fn(P, Pr) end
+	local tag = ref:gsub("[^%w_.-]", "_")
+	local wt = "re/wt_" .. tag
+	local f = io.open(wt .. "/src/prometheus.lua", "rb")
+	if not f then
+		if os.execute("git -C " .. rp .. " rev-parse --verify " .. ref .. " >nul 2>&1") ~= 0 then
+			return false, "missing_ref:" .. ref
+		end
+		if os.execute("git -C " .. rp .. " worktree add --detach ../wt_" .. tag .. " " .. ref .. " >nul 2>&1") ~= 0 then
+			return false, "worktree_fail:" .. ref
+		end
+	else
+		f:close()
+	end
+	local sv = {}
+	for k, v in pairs(package.loaded) do
+		if k:match("^src%.prometheus") or k:match("^src%.presets") or k:match("^prometheus") or k == "logger" then
+			sv[k] = v
+			package.loaded[k] = nil
+		end
+	end
+	local op = package.path
+	package.path = wt .. "/?.lua;" .. wt .. "/src/?.lua;" .. op
+	local ok, res = pcall(function()
+		local pv = require("src.prometheus")
+		local zv = require("src.presets")
+		pv.Logger.logLevel = pv.Logger.LogLevel.Error
+		return fn(pv, zv)
+	end)
+	package.path = op
+	for k in pairs(package.loaded) do
+		if k:match("^src%.prometheus") or k:match("^src%.presets") or k:match("^prometheus") or k == "logger" then
+			package.loaded[k] = nil
+		end
+	end
+	for k, v in pairs(sv) do package.loaded[k] = v end
+	return ok, res
+end
+
+local function obfVer(ref, code, preset, ver, sd, noAt)
+	return withVer(ref, function(pv, zv)
+		local bp = assert(zv[preset], "bad preset: " .. tostring(preset))
+		local cfg = cp(bp)
+		cfg.LuaVersion = ver
+		cfg.Seed = sd
+		if noAt then
+			local st = {}
+			for _, s in ipairs(cfg.Steps) do
+				if s.Name ~= "AntiTamper" then st[#st + 1] = s end
+			end
+			cfg.Steps = st
+		end
+		return pv.Pipeline:fromConfig(cfg):apply(code, "dyn")
+	end)
+end
+
+local function hasVer(ref)
+	if not ref or ref == "HEAD" or ref == "master" then return true end
+	local f = io.open("re/wt_" .. ref:gsub("[^%w_.-]", "_") .. "/src/prometheus.lua", "rb")
+	if f then f:close() return true end
+	return os.execute("git -C " .. rp .. " rev-parse --verify " .. ref .. " >nul 2>&1") == 0
+end
+
 local M = {
 	cases51 = tc51,
 	casesU = tcU,
 	obf = obf,
 	obfStep = obfStep,
+	obfVer = obfVer,
+	hasVer = hasVer,
 	cap = cap,
 	parseOk = parseOk,
 }

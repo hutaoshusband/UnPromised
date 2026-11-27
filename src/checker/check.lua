@@ -21,12 +21,33 @@ local function chk(nm,fn)
   end
   io.flush()
 end
+local function no_leak(out,vm_ok)
+  assert(not out:find("35184372088832",1,true),"enc_left")
+  assert(not out:find("Tamper Detected!",1,true),"at_left")
+  if not vm_ok then assert(not out:find("unknown VM opcode",1,true),"vm_left") end
+end
 local function eq51(a,b,n0)
   local o1,e1=P.cap(a)
   assert(o1,"src:"..tostring(e1))
   local o2,e2=P.cap(b)
   assert(o2,"dec:"..tostring(e2))
   if n0~=false then assert(e1==e2,"mismatch:\n"..tostring(e1).."\n~=\n"..tostring(e2)) end
+end
+for _,rg in ipairs({{"tests/regressions/failing1.txt",'print("this is another test")'},{"tests/regressions/failing2.txt",'print("this is a test")'}}) do
+  local rf=io.open(rg[1],"rb")
+  if rf then
+    rf:close()
+    chk("reg:"..rg[1],function()
+      local ob=rd(rg[1])
+      local out=D.deobf(ob)
+      A.parse(out)
+      no_leak(out)
+      assert(not out:find("setmetatable",1,true),"smt_left")
+      assert(not out:find("unpack",1,true),"unp_left")
+      assert(out:find(rg[2],1,true),"missing:"..rg[2])
+      eq51(ob,out)
+    end)
+  end
 end
 local nl_src=rd("tests/not/source/non_roblox/lua.lua")
 chk("clean:non_roblox/lua",function() eq51(nl_src,D.deobf(nl_src)) end)
@@ -88,6 +109,7 @@ if arg[1]~="--curated" then
         local src=P.cases51[nm](1)
         local ob=P.obf(src,pr,"Lua51",1,true)
         local out=D.deobf(ob)
+        no_leak(out)
         eq51(src,out)
       end)
     end
@@ -169,6 +191,53 @@ if arg[1]~="--curated" then
       local src=P.cases51["synth_upval"](3)
       eq51(src,D.deobf(obf_m(src,cb[2])))
     end)
+  end
+  local wad_st={
+    {Name="WatermarkCheck",Settings={Content="WeAreDevs"}},
+    {Name="EncryptStrings",Settings={}},
+    {Name="AntiTamper",Settings={UseDebug=false}},
+    {Name="Cff",Settings={}},
+    {Name="ConstantArray",Settings={Threshold=1,StringsOnly=true,Shuffle=true,Rotate=true,LocalWrapperThreshold=0}},
+    {Name="NumbersToExpressions",Settings={}},
+    {Name="WrapInFunction",Settings={}},
+  }
+  for _,cn in ipairs({"single_str","no_str","single_ret","closure_at","synth_upval"}) do
+    chk("wad:"..cn,function()
+      local src=P.cases51[cn](1)
+      local out=D.deobf(obf_m(src,wad_st))
+      A.parse(out)
+      no_leak(out)
+      assert(not out:find("WeAreDevs",1,true),"wm_left")
+      if cn=="single_str" then assert(out:find('print("this is a test")',1,true) and not out:find("unpack",1,true) and not out:find("setmetatable",1,true),"dirty_single") end
+      if cn=="no_str" then assert(out:find("print(7744)",1,true) and not out:find("setmetatable",1,true),"dirty_no_str") end
+      eq51(src,out)
+    end)
+  end
+  chk("wad:forever_at",function()
+    local st={} for i,s in ipairs(wad_st) do st[i]=s end
+    local out=D.deobf(obf_m("while true do print(\"loop\") end",st))
+    A.parse(out)
+    no_leak(out)
+    assert(not out:find("WeAreDevs",1,true),"wm_left")
+    assert(out:find('print("loop")',1,true),"missing_loop")
+  end)
+  for _,vr in ipairs({"v0.2.12","v0.3","v0.3.1","HEAD"}) do
+    if P.hasVer(vr) then
+      for _,pr in ipairs({"Weak","Medium","Strong"}) do
+        for _,cn in ipairs({"src_non_roblox_lua","single_str"}) do
+          chk("ver:"..vr..":"..cn.."["..pr.."]",function()
+            local src=P.cases51[cn](1)
+            local ok,ob=P.obfVer(vr,src,pr,"Lua51",1,false)
+            assert(ok,ob)
+            local out=D.deobf(ob)
+            A.parse(out)
+            no_leak(out)
+            assert(#out<(vr=="v0.2.12" and 8000 or 2500),"unreduced:"..#out)
+            eq51(src,out)
+          end)
+        end
+      end
+    end
   end
   local unms={}
   for k in pairs(P.casesU) do unms[#unms+1]=k end

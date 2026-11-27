@@ -152,16 +152,26 @@ local function ext_k8(n)
   end)
   return k8
 end
-local function is_smt(rhs)
+local function smt_tbl(rhs,ev)
   rhs=unp(rhs)
-  if rhs[1]~="Call" or unp(rhs[2])[1]~="Var" or unp(rhs[2])[2]~="setmetatable" or #rhs[3]~=2 then return false end
+  if rhs[1]~="Call" or unp(rhs[2])[1]~="Var" or unp(rhs[2])[2]~="setmetatable" or #rhs[3]~=2 then return nil end
   local t1,t2=unp(rhs[3][1]),unp(rhs[3][2])
-  if t1[1]~="Tbl" or #t1[2]~=0 or t2[1]~="Tbl" then return false end
+  if t1[1]~="Tbl" or #t1[2]~=0 or t2[1]~="Tbl" then return nil end
   for _,f in ipairs(t2[2]) do
-    if (f[1]=="F" and f[2]=="__index") or (f[1]=="I" and unp(f[2])[1]=="Str" and unp(f[2])[2]=="__index") then return true end
+    if f[1]=="F" and f[2]=="__index" then
+      local v=unp(f[3])
+      return v[1]=="Var" and v[2] or true
+    elseif f[1]=="I" then
+      local kx=unp(f[2])
+      if (kx[1]=="Str" and kx[2]=="__index") or (ev and kx[1]=="Var" and ev[kx[2]] and ev[kx[2]][1]=="Str" and ev[kx[2]][2]=="__index") then
+        local v=unp(f[3])
+        return v[1]=="Var" and v[2] or true
+      end
+    end
   end
-  return false
+  return nil
 end
+local function is_smt(rhs,ev) return smt_tbl(rhs,ev)~=nil end
 local function ext_dec_fn(fn)
   if fn[1]~="Func" or #fn[2]<2 or fn[3] then return nil end
   if ext_lcg(fn[4]) then return nil end
@@ -344,7 +354,7 @@ local function is_sbox_s(st)
     for _,pr in ipairs(ps) do
       local r=unp(pr[2])
       if r[1]=="Tbl" and #r[2]==0 then
-      elseif r[1]=="Num" or r[1]=="Nil" or r[1]=="Bool" then
+      elseif r[1]=="Num" or r[1]=="Nil" or r[1]=="Bool" or r[1]=="Str" then
       elseif r[1]=="Field" and unp(r[2])[1]=="Var" and (unp(r[2])[2]=="math" or unp(r[2])[2]=="table" or unp(r[2])[2]=="string") then
       elseif r[1]=="Idx" and unp(r[2])[1]=="Var" and (unp(r[2])[2]=="math" or unp(r[2])[2]=="table" or unp(r[2])[2]=="string") then
       elseif r[1]=="Var" then
@@ -423,9 +433,9 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
     end
   end
   local pi,m45,a45,m8,di,ti,fnm,tnm,k8,pnm
-  local function add_setup(hi,sfn,stnm,sm45,sa45,sm8,sk8,need)
+  local function add_setup(hi,sfn,stnm,sm45,sa45,sm8,sk8,need,shi)
     setups[hi]={sfn,stnm,sm45,sa45,sm8,sk8}
-    for j=hi,1,-1 do
+    for j=(shi or hi),1,-1 do
       if j==pi or j==di or j==ti then
         rm[j]=true
         for _,pr in ipairs(bind_pairs(sts[j])) do dvs[pr[1]]=true end
@@ -445,20 +455,43 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
             end
           end
         else
-          if not is_sbox_s(sj) then break end
-          local rd,wr=vars_rd(sj),wr_in(sj)
-          local hit=false
-          for v,_ in pairs(need) do if rd[v] or wr[v] then hit=true break end end
-          if hit then
-            rm[j]=true
-            for v,_ in pairs(wr) do dvs[v]=true end
-            for v,_ in pairs(rd) do need[v]=true end
+          if rm[j] or ext_lcg(sj) then break end
+          if is_sbox_s(sj) then
+            local rd,wr=vars_rd(sj),wr_in(sj)
+            local hit=false
+            for v,_ in pairs(need) do if rd[v] or wr[v] then hit=true break end end
+            if hit then
+              rm[j]=true
+              for v,_ in pairs(wr) do dvs[v]=true end
+              for v,_ in pairs(rd) do need[v]=true end
+            elseif sj[1]=="LocalVar" and #sj[3]>0 then
+              local ps=bind_pairs(sj)
+              if #ps>0 then
+                local all_n=true
+                for _,pr in ipairs(ps) do if not need[pr[1]] then all_n=false break end end
+                if all_n then
+                  for _,pr in ipairs(ps) do
+                    dvs[pr[1]]=true
+                    for v,_ in pairs(vars_rd(pr[2])) do need[v]=true end
+                  end
+                end
+              end
+            end
+          else
+            local ps=bind_pairs(sj)
+            local fn_b=#ps>0
+            for _,pr in ipairs(ps) do if unp(pr[2])[1]~="Func" then fn_b=false break end end
+            local wr,rd=wr_in(sj),vars_rd(sj)
+            local bad=false
+            for v,_ in pairs(need) do if wr[v] or (not fn_b and rd[v]) then bad=true break end end
+            if bad then break end
           end
         end
       end
     end
     for v,_ in pairs(need) do rm_r[v]=true end
   end
+  local senv={}
   for i,st in ipairs(sts) do
     if not rm[i] then
       for _,pr in ipairs(bind_pairs(st)) do
@@ -466,7 +499,7 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
         if rhs[1]=="Func" then
           local l45,la45,lm8=ext_lcg(rhs)
           if l45 and lm8 then
-            pi,pnm,m45,a45,m8=i,nm,l45,la45,lm8
+            pi,pnm,m45,a45,m8,di,ti,fnm,tnm,k8=i,nm,l45,la45,lm8,nil,nil,nil,nil,nil
             dvs[nm]=true
             break
           end
@@ -475,9 +508,17 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
             if k then di,fnm,k8=i,nm,k dvs[nm]=true break end
           end
         end
-        if pi and is_smt(rhs) then
+        if pi and is_smt(rhs,senv) then
           ti,tnm=i,nm dvs[nm]=true
         end
+      end
+      if st[1]=="LocalVar" or st[1]=="Assign" then
+        for _,pr in ipairs(bind_pairs(st)) do
+          local u=unp(pr[2])
+          if u[1]=="Str" then senv[pr[1]]=u else senv[pr[1]]=nil end
+        end
+      else
+        for v,_ in pairs(wr_in(st)) do senv[v]=nil end
       end
       if pi and di and ti and i>=ti then
         local hi=math.max(pi,di,ti)
@@ -487,28 +528,111 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
         end
         add_setup(hi,fnm,tnm,m45,a45,m8,k8,need)
         pi,di,ti,fnm,tnm,k8,pnm=nil,nil,nil,nil,nil,nil,nil
+      elseif pi and not (di and ti) and i>pi then
+        local af,ak,itnm,sb1
+        A.walk(st,function(x)
+          if ak and itnm then return end
+          if x[1]=="Idx" then
+            local b1,ca=unp(x[2]),unp(x[3])
+            local srv=(not ti) and smt_tbl(b1,senv) or nil
+            local tok=(ti and b1[1]=="Var" and b1[2]==tnm and tnm) or (srv and (type(srv)=="string" and ("__IDX_"..srv) or "__INLINE_SMT"))
+            if tok and ca[1]=="Call" and #ca[3]>=2 then
+              local fn=unp(ca[2])
+              if di and fn[1]=="Var" and fn[2]==fnm then
+                af,ak,itnm,sb1=sts[di],k8,tok,b1
+              elseif not di and fn[1]=="Func" then
+                local k=ext_dec_fn(fn)
+                if k then af,ak,itnm,sb1=fn,k,tok,b1 end
+              end
+            end
+          end
+        end)
+        if not ak and ti and not di and i>ti then
+          A.walk(st,function(x)
+            if ak then return end
+            if x[1]=="Func" then
+              local k=ext_dec_fn(x)
+              if k then af,ak,itnm=x,k,tnm end
+            end
+          end)
+        end
+        if ak and itnm then
+          local hi=math.max(pi,di or 0,ti or 0)
+          local shi=math.max(hi,i-1)
+          local sfn=di and fnm or ("__ANON_"..itnm)
+          local need={[pnm]=true}
+          if di then need[fnm]=true end
+          if ti then need[tnm]=true end
+          for v,_ in pairs(vars_rd(sts[pi])) do need[v]=true end
+          if di then for v,_ in pairs(vars_rd(sts[di])) do need[v]=true end end
+          if ti then for v,_ in pairs(vars_rd(sts[ti])) do need[v]=true end end
+          if sb1 then for v,_ in pairs(vars_rd(sb1)) do need[v]=true end end
+          for v,_ in pairs(vars_rd(af)) do need[v]=true end
+          add_setup(hi,sfn,itnm,m45,a45,m8,ak,need,shi)
+          pi,di,ti,fnm,tnm,k8,pnm=nil,nil,nil,nil,nil,nil,nil
+        end
       end
     end
   end
-  if pi and ti and not di then
-    local af,ak
-    for j=ti+1,#sts do
-      A.walk(sts[j],function(x)
-        if ak then return end
-        if x[1]=="Func" then
-          local k=ext_dec_fn(x)
-          if k then af,ak=x,k end
+  if pi and not di and not ti then
+    local pal={[pnm]=true}
+    local ev2={}
+    local jcs,srv
+    for j=pi+1,#sts do
+      local sj=sts[j]
+      if sj[1]=="LocalVar" or sj[1]=="Assign" then
+        for _,pr in ipairs(bind_pairs(sj)) do
+          local u=unp(pr[2])
+          if u[1]=="Var" and pal[u[2]] then pal[pr[1]]=true dvs[pr[1]]=true end
+          if u[1]=="Str" then ev2[pr[1]]=u else ev2[pr[1]]=nil end
         end
-      end)
-      if ak then break end
+      elseif sj[1]=="CallStmt" then
+        local t=smt_tbl(sj[2],ev2)
+        if t then jcs,srv=j,t break end
+      end
     end
-    if ak then
-      local hi=math.max(pi,ti)
-      local need={[pnm]=true,[tnm]=true}
+    if jcs then
+      local need={[pnm]=true}
+      for v,_ in pairs(pal) do need[v]=true end
       for v,_ in pairs(vars_rd(sts[pi])) do need[v]=true end
-      for v,_ in pairs(vars_rd(sts[ti])) do need[v]=true end
-      for v,_ in pairs(vars_rd(af)) do need[v]=true end
-      add_setup(hi,"__ANON_"..tnm,tnm,m45,a45,m8,ak,need)
+      for v,_ in pairs(vars_rd(sts[jcs])) do need[v]=true end
+      if type(srv)=="string" then need[srv]=true end
+      local ok_d=true
+      for j=jcs+1,#sts do
+        local rd=vars_rd(sts[j])
+        for v,_ in pairs(pal) do if rd[v] then ok_d=false break end end
+        if type(srv)=="string" and rd[srv] then ok_d=false end
+        if not ok_d then break end
+      end
+      if ok_d then
+        for k=pi-1,math.max(1,pi-12),-1 do
+          local sk=sts[k]
+          if sk[1]=="While" or sk[1]=="ForNum" then
+            local imp=false
+            A.walk(sk,function(x) if x[1]=="Func" or x[1]=="MCall" or x[1]=="Vararg" then imp=true end end)
+            if not imp then
+              A.walk(sk,function(x)
+                if x[1]=="Assign" then
+                  for ix,l in ipairs(x[2]) do
+                    local u=unp(l)
+                    if u[1]=="Idx" and unp(u[2])[1]=="Var" and x[3][ix] then
+                      local cm,hm=unp(u[2])[2],false
+                      A.walk(x[3][ix],function(y) if y[1]=="Bin" and y[2]=="-" and lnum(y[4])==1 then hm=true end end)
+                      if hm then
+                        local ru=false
+                        for m=pi+1,#sts do if vars_rd(sts[m])[cm] then ru=true break end end
+                        if not ru then need[cm]=true end
+                      end
+                    end
+                  end
+                end
+              end)
+            end
+          end
+        end
+        rm[jcs]=true
+        add_setup(pi,"__DEAD_"..pi,nil,m45,a45,m8,0,need,jcs-1)
+      end
     end
   end
   local wsuf={}
@@ -533,7 +657,7 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
     local dec_i=find_decl(fnm,hi)
     local info={tnm,s[3],s[4],s[5],s[6]}
     fwd_sp[#fwd_sp+1]={dec_i,hi,fnm,info}
-    local fal,tal={[fnm]=true},{[tnm]=true}
+    local fal,tal={[fnm]=true},tnm and {[tnm]=true} or {}
     for k=hi+1,math.min(#sts,hi+16) do
       local ps=bind_pairs(sts[k])
       if #ps==0 then break end
@@ -587,13 +711,18 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
       return {"ForIn",e[2],es,inv_enc_blk(e[4],s2,t2,en2,c2)}
     elseif k=="Idx" then
       local b1,ca=unp(e[2]),unp(e[3])
-      if b1[1]=="Var" and ca[1]=="Var" and cr2[ca[2]] then
-        local to=ta2[b1[2]] or b1[2]
+      local to
+      if b1[1]=="Var" then
+        to=ta2[b1[2]] or b1[2]
+      else
+        local srv=smt_tbl(b1,e2)
+        if srv then to=type(srv)=="string" and ("__IDX_"..srv) or "__INLINE_SMT" end
+      end
+      if to and ca[1]=="Var" and cr2[ca[2]] then
         if cr2[ca[2]][1]==to then return {"Str",cr2[ca[2]][2]} end
       end
-      if b1[1]=="Var" and ca[1]=="Call" and #ca[3]>=2 then
+      if to and ca[1]=="Call" and #ca[3]>=2 then
         local fn=unp(ca[2])
-        local to=ta2[b1[2]] or b1[2]
         local tnm,m4,a4,m8v,k8v
         if fn[1]=="Var" and sp2[fn[2]] then
           local fv=sp2[fn[2]]
@@ -643,7 +772,12 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
       local s=setups[i]
       sp[s[1]]={s[2],s[3],s[4],s[5],s[6]}
     end
-    if not rm[i] then
+    if rm[i] then
+      if st[1]=="LocalVar" and #st[2]>0 then
+        for _,nm in ipairs(st[2]) do rm_r[nm]=true end
+        out[#out+1]={"LocalVar",st[2],{}}
+      end
+    else
       local k=st[1]
       local st2
       if k=="While" or k=="Repeat" or k=="ForNum" or k=="ForIn" then
@@ -777,7 +911,16 @@ local function inv_enc_blk(blk,sp0,ta0,env0,cr0)
             for _,pr in ipairs(ps) do
               if not (dvs[pr[1]] and dead_after(pr[1],out,idx+1)) then all_d=false break end
             end
-            if all_d then ch=true keep=false end
+            if all_d then
+              ch=true keep=false
+              if st[1]=="LocalVar" then
+                local nl={}
+                for _,nm in ipairs(st[2]) do
+                  if ref_after(nm,out,idx+1) then nl[#nl+1]=nm end
+                end
+                if #nl>0 then kp[#kp+1]={"LocalVar",nl,{}} end
+              end
+            end
           end
         end
         if keep then kp[#kp+1]=st end

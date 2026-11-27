@@ -371,51 +371,109 @@ local function wm_gsub_gv(s)
   local mc=unp(s[2])
   if mc[1]~="MCall" or mc[3]~="gsub" or #mc[4]~=2 then return nil end
   local b0,p1,p2=unp(mc[2]),unp(mc[4][1]),unp(mc[4][2])
-  if b0[1]~="Str" or p1[1]~="Str" or p1[2]~=".+" or p2[1]~="Func" or #p2[2]~=1 then return nil end
+  if b0[1]~="Str" or b0[2]=="" or p1[1]~="Str" or p1[2]~=".+" or p2[1]~="Func" or #p2[2]~=1 then return nil end
   local fb=p2[4][2]
   if #fb~=1 or fb[1][1]~="Assign" or #fb[1][2]~=1 or #fb[1][3]~=1 then return nil end
   local gv,rv=unp(fb[1][2][1]),unp(fb[1][3][1])
   if gv[1]~="Var" or rv[1]~="Var" or rv[2]~=p2[2][1] then return nil end
   return gv[2],b0[2]
 end
-local function is_wm_if(s,gv)
-  if s[1]~="If" or #s[2]~=1 then return false end
-  local c,cb=unp(s[2][1][1]),s[2][1][2][2]
-  if c[1]~="Bin" or c[2]~="~=" then return false end
-  local l,r=unp(c[3]),unp(c[4])
-  if l[1]~="Var" or l[2]~=gv or r[1]~="Str" then return false end
-  if #cb==1 and cb[1][1]=="Return" and #cb[1][2]==0 then return true,s[3] end
+local function is_ret0(b)
+  local bs=b[2]
+  return #bs==1 and bs[1][1]=="Return" and #bs[1][2]==0
+end
+local function wm_pure(e)
+  if type(e)~="table" then return true end
+  local k=e[1]
+  if k=="Nil" or k=="Bool" or k=="Num" or k=="Str" or k=="Var" or k=="Vararg" or k=="Func" then return true
+  elseif k=="Paren" then return wm_pure(e[2])
+  elseif k=="Tbl" then
+    for _,f in ipairs(e[2]) do
+      if f[1]=="V" then if not wm_pure(f[2]) then return false end
+      elseif f[1]=="F" then if not wm_pure(f[3]) then return false end
+      else if not wm_pure(f[2]) or not wm_pure(f[3]) then return false end end
+    end
+    return true
+  end
   return false
+end
+local function wm_safe(s,gv)
+  local k=s[1]
+  if k=="LocalVar" then
+    if inl(s[2],gv) then return false end
+    for _,v in ipairs(s[3]) do if not wm_pure(v) then return false end end
+  elseif k=="LocalFunc" then
+    if s[2]==gv then return false end
+  else return false end
+  return not M.has_use({s},1,gv)
+end
+local function is_wm_if(s,gv,sv)
+  if s[1]~="If" or #s[2]~=1 then return false end
+  local c,tb,eb=unp(s[2][1][1]),s[2][1][2],s[3]
+  if c[1]~="Bin" then return false end
+  local l,r=unp(c[3]),unp(c[4])
+  local m1=l[1]=="Var" and l[2]==gv and r[1]=="Str" and (not sv or r[2]==sv)
+  local m2=r[1]=="Var" and r[2]==gv and l[1]=="Str" and (not sv or l[2]==sv)
+  if not (m1 or m2) then return false end
+  if c[2]=="~=" and is_ret0(tb) then return true,eb and eb[2] or {}
+  elseif c[2]=="==" and (not eb or is_ret0(eb)) then return true,tb[2] end
+  return false
+end
+local function emit_ub(ns,ub,sts,k)
+  local wd=false
+  if k<#sts then
+    for _,us in ipairs(ub) do
+      if us[1]=="LocalVar" then
+        for _,nm in ipairs(us[2]) do if M.has_use(sts,k+1,nm) then wd=true break end end
+      elseif us[1]=="LocalFunc" then
+        if M.has_use(sts,k+1,us[2]) then wd=true end
+      end
+      if wd then break end
+    end
+  end
+  if wd then ns[#ns+1]={"Do",{"Block",ub}}
+  else for _,es in ipairs(ub) do ns[#ns+1]=es end end
+end
+local function match_wm(s,gv,sv)
+  local ok,ub=is_wm_if(s,gv,sv)
+  if ok then return ub end
+  if s[1]=="Return" and #s[2]==1 then
+    local ce=unp(s[2][1])
+    local fn=ce[1]=="Call" and #ce[3]==1 and unp(ce[3][1])[1]=="Vararg" and unp(ce[2]) or nil
+    if fn and fn[1]=="Func" and #fn[2]==0 and fn[3] then
+      local fb,m=fn[4][2],1
+      while m<=#fb and wm_safe(fb[m],gv) do m=m+1 end
+      if m<=#fb then
+        local ok2,ub2=is_wm_if(fb[m],gv,sv)
+        if ok2 then
+          local nb={}
+          for p=1,m-1 do nb[#nb+1]=fb[p] end
+          emit_ub(nb,ub2,fb,m)
+          for p=m+1,#fb do nb[#nb+1]=fb[p] end
+          return {{"Return",{{"Call",{"Func",fn[2],fn[3],{"Block",nb}},ce[3]}}}}
+        end
+      end
+    end
+  end
+  return nil
 end
 function M.inv_wm(ast)
   return map_blk(ast,function(b)
     local sts,ns,i=b[2],{},1
     while i<=#sts do
-      local gv=i<#sts and wm_gsub_gv(sts[i]) or nil
+      local gv,sv=i<#sts and wm_gsub_gv(sts[i]) or nil
       if gv then
-        local ok,eb=is_wm_if(sts[i+1],gv)
-        if ok then
-          if eb then for _,es in ipairs(eb[2]) do ns[#ns+1]=es end end
-          i=i+2
-        elseif sts[i+1][1]=="Return" and #sts[i+1][2]==1 then
-          local ce=unp(sts[i+1][2][1])
-          local fn=ce[1]=="Call" and #ce[3]==1 and unp(ce[3][1])[1]=="Vararg" and unp(ce[2]) or nil
-          if fn and fn[1]=="Func" and #fn[2]==0 and fn[3] and #fn[4][2]>=1 then
-            local ok2,eb2=is_wm_if(fn[4][2][1],gv)
-            if ok2 then
-              local nb={}
-              if eb2 then for _,es in ipairs(eb2[2]) do nb[#nb+1]=es end end
-              for k=2,#fn[4][2] do nb[#nb+1]=fn[4][2][k] end
-              ns[#ns+1]={"Return",{{"Call",{"Func",fn[2],fn[3],{"Block",nb}},ce[3]}}}
-              i=i+2
-            else
-              ns[#ns+1]=sts[i] i=i+1
-            end
-          else
-            ns[#ns+1]=sts[i] i=i+1
-          end
+        local k=i+1
+        while k<=#sts and wm_safe(sts[k],gv) do k=k+1 end
+        local ub=k<=#sts and match_wm(sts[k],gv,sv) or nil
+        if ub then
+          if M.has_use(ub,1,gv) or M.has_use(sts,k+1,gv) then ns[#ns+1]=sts[i] end
+          for j=i+1,k-1 do ns[#ns+1]=sts[j] end
+          emit_ub(ns,ub,sts,k)
+          i=k+1
         else
-          ns[#ns+1]=sts[i] i=i+1
+          ns[#ns+1]=sts[i]
+          i=i+1
         end
       else
         ns[#ns+1]=sts[i]
@@ -526,6 +584,24 @@ local function live_anti(nm,sts)
   end
   return rb(sts)==true
 end
+local function no_fall(b)
+  local bs=b[2]
+  if #bs==0 then return false end
+  local ls=bs[#bs]
+  if ls[1]=="Return" then return true end
+  if ls[1]=="While" and unp(ls[2])[1]=="Bool" and unp(ls[2])[2]==true then
+    local br=false
+    local function sb(n)
+      if type(n)~="table" then return end
+      if n[1]=="Break" then br=true return end
+      if n[1]=="Func" or n[1]=="While" or n[1]=="Repeat" or n[1]=="ForNum" or n[1]=="ForIn" then return end
+      for i=1,#n do sb(n[i]) end
+    end
+    sb(ls[3])
+    return not br
+  end
+  return false
+end
 function M.inv_anti(ast)
   return map_blk(ast,function(b)
     local sts={}
@@ -559,10 +635,13 @@ function M.inv_anti(ast)
     if next(ef) and pc then
       for i=pc+1,#sts do
         local st=sts[i]
-        if st[1]=="If" and #st[2]==1 and st[3] and unp(st[2][1][1])[1]=="Var" and has_anti_err(st[3],ef) then
+        local at_no_else=st[1]=="If" and #st[2]==1 and not st[3] and unp(st[2][1][1])[1]=="Var" and i<#sts and has_anti_err({"Block",{sts[i+1]}},ef) and (sts[i+1][1]=="Return" or i+1==#sts) and no_fall(st[2][1][2])
+        if st[1]=="If" and #st[2]==1 and ((st[3] and unp(st[2][1][1])[1]=="Var" and has_anti_err(st[3],ef)) or at_no_else) then
           local tb={}
           for _,x in ipairs(st[2][1][2][2]) do tb[#tb+1]=x end
-          for j=i+1,#sts do tb[#tb+1]=sts[j] end
+          if not at_no_else then
+            for j=i+1,#sts do tb[#tb+1]=sts[j] end
+          end
           local kp,kp_s,tl={},{},{}
           for j,x in ipairs(tb) do tl[j]=x end
           for j=i-1,1,-1 do
@@ -584,6 +663,15 @@ function M.inv_anti(ast)
                   for _,x in ipairs(tl) do ntl[#ntl+1]=x end
                   tl=ntl
                 end
+              end
+            elseif ps[1]=="CallStmt" then
+              local gvv=wm_gsub_gv(ps)
+              if gvv and live_anti(gvv,tl) then
+                kp[#kp+1]=ps
+                kp_s[j]=true
+                local ntl={ps}
+                for _,x in ipairs(tl) do ntl[#ntl+1]=x end
+                tl=ntl
               end
             end
           end
@@ -1075,20 +1163,32 @@ function M.inv_prox(ast)
   end
   return px_b(ast,{sm={},emp={},prx={}})
 end
-local function is_str_pool(s)
-  if s[1]~="LocalVar" or #s[2]~=1 or #s[3]~=1 then return nil end
-  local t=unp(s[3][1])
+local function is_str_pool(s,sev)
+  local pv,rh
+  if s[1]=="LocalVar" and #s[2]==1 and #s[3]==1 then
+    pv,rh=s[2][1],s[3][1]
+  elseif s[1]=="Assign" and #s[2]==1 and #s[3]==1 and unp(s[2][1])[1]=="Var" then
+    pv,rh=unp(s[2][1])[2],s[3][1]
+  else
+    return nil
+  end
+  local t=unp(rh)
   if t[1]~="Tbl" or #t[2]==0 then return nil end
   local pvs={}
   for i,f in ipairs(t[2]) do
     if f[1]~="V" then return nil end
     local v=unp(f[2])
-    if v[1]~="Str" then return nil end
-    pvs[i]=v[2]
+    if v[1]=="Str" then
+      pvs[i]=v[2]
+    elseif v[1]=="Var" and sev and sev[v[2]] then
+      pvs[i]=sev[v[2]]
+    else
+      return nil
+    end
   end
-  return s[2][1],pvs
+  return pv,pvs
 end
-local function mut_b(sts,i0,nm)
+local function mut_b(sts,i0,nm,ext_ok)
   local function me(e)
     if type(e)~="table" then return false end
     local k=e[1]
@@ -1120,7 +1220,7 @@ local function mut_b(sts,i0,nm)
       return me(e[3])
     elseif k=="Func" then
       if inl(e[2],nm) then return false end
-      return mut_b(e[4][2],1,nm)
+      return mut_b(e[4][2],1,nm,ext_ok)
     end
     return false
   end
@@ -1133,25 +1233,29 @@ local function mut_b(sts,i0,nm)
     local s=sts[i]
     local k=s[1]
     if k=="LocalVar" then
-      for _,v in ipairs(s[3]) do if me(v) then return true end end
+      for j,v in ipairs(s[3]) do
+        local u=unp(v)
+        if ext_ok and #s[2]==#s[3] and u[1]=="Var" and u[2]==nm and not mut_b(sts,i+1,s[2][j],true) then
+        elseif me(v) then return true end
+      end
       if inl(s[2],nm) then return false end
     elseif k=="LocalFunc" then
       if s[2]==nm then return false end
-      if not inl(s[3],nm) and mut_b(s[5][2],1,nm) then return true end
+      if not inl(s[3],nm) and mut_b(s[5][2],1,nm,ext_ok) then return true end
     elseif k=="FuncStmt" then
       if ml(s[2]) then return true end
-      if not inl(s[4],nm) and not (s[3] and nm=="self") and mut_b(s[6][2],1,nm) then return true end
+      if not inl(s[4],nm) and not (s[3] and nm=="self") and mut_b(s[6][2],1,nm,ext_ok) then return true end
     elseif k=="Assign" then
       for _,l in ipairs(s[2]) do if ml(l) then return true end end
       for _,r in ipairs(s[3]) do if me(r) then return true end end
     elseif k=="CAssign" then
       if ml(s[3]) or me(s[4]) then return true end
     elseif k=="Do" then
-      if mut_b(s[2][2],1,nm) then return true end
+      if mut_b(s[2][2],1,nm,ext_ok) then return true end
     elseif k=="While" then
-      if me(s[2]) or mut_b(s[3][2],1,nm) then return true end
+      if me(s[2]) or mut_b(s[3][2],1,nm,ext_ok) then return true end
     elseif k=="Repeat" then
-      if mut_b(s[2][2],1,nm) then return true end
+      if mut_b(s[2][2],1,nm,ext_ok) then return true end
       local sh=false
       for _,st in ipairs(s[2][2]) do
         if st[1]=="LocalVar" and inl(st[2],nm) then sh=true
@@ -1160,15 +1264,15 @@ local function mut_b(sts,i0,nm)
       if not sh and me(s[3]) then return true end
     elseif k=="If" then
       for _,c in ipairs(s[2]) do
-        if me(c[1]) or mut_b(c[2][2],1,nm) then return true end
+        if me(c[1]) or mut_b(c[2][2],1,nm,ext_ok) then return true end
       end
-      if s[3] and mut_b(s[3][2],1,nm) then return true end
+      if s[3] and mut_b(s[3][2],1,nm,ext_ok) then return true end
     elseif k=="ForNum" then
       if me(s[3]) or me(s[4]) or (s[5] and me(s[5])) then return true end
-      if s[2]~=nm and mut_b(s[6][2],1,nm) then return true end
+      if s[2]~=nm and mut_b(s[6][2],1,nm,ext_ok) then return true end
     elseif k=="ForIn" then
       for _,e in ipairs(s[3]) do if me(e) then return true end end
-      if not inl(s[2],nm) and mut_b(s[4][2],1,nm) then return true end
+      if not inl(s[2],nm) and mut_b(s[4][2],1,nm,ext_ok) then return true end
     elseif k=="Return" then
       for _,e in ipairs(s[2]) do if me(e) then return true end end
     elseif k=="CallStmt" then
@@ -1177,32 +1281,238 @@ local function mut_b(sts,i0,nm)
   end
   return false
 end
-local function mutated_in(sts,i0,nm)
-  return mut_b(sts,i0,nm)
+local function pool_lim(sts,i0,nm)
+  for j=i0,#sts do
+    local s=sts[j]
+    if s[1]=="Assign" and #s[2]==1 and #s[3]==1 and unp(s[2][1])[1]=="Var" and unp(s[2][1])[2]==nm then
+      if mut_b({{"Return",s[3]}},1,nm,false) then return nil end
+      for k=i0,j-1 do
+        local sk=sts[k]
+        local fc=false
+        A.walk(sk,function(x)
+          if (x[1]=="Func" or x[1]=="LocalFunc" or x[1]=="FuncStmt") and uv_e(x,nm) then fc=true end
+        end)
+        if fc then return nil end
+      end
+      return j-1,true
+    elseif mut_b({s},1,nm,true) then
+      return nil
+    end
+  end
+  return #sts,false
 end
 function M.inv_pool(ast)
-  return map_blk(ast,function(b)
+  local function wr_after(sts,i0,nm)
+    for i=i0,#sts do
+      local s=sts[i]
+      local k=s[1]
+      if k=="Assign" then
+        for _,l in ipairs(s[2]) do local u=unp(l) if u[1]=="Var" and u[2]==nm then return true end end
+      elseif k=="CAssign" then
+        local u=unp(s[3]) if u[1]=="Var" and u[2]==nm then return true end
+      elseif k=="LocalVar" then
+        if inl(s[2],nm) then return false end
+      elseif k=="LocalFunc" then
+        if s[2]==nm then return false end
+        if not inl(s[3],nm) and wr_after(s[5][2],1,nm) then return true end
+      elseif k=="FuncStmt" then
+        if not s[3] and unp(s[2])[1]=="Var" and unp(s[2])[2]==nm then return true end
+        if not inl(s[4],nm) and not (s[3] and nm=="self") and wr_after(s[6][2],1,nm) then return true end
+      elseif k=="Do" then
+        if wr_after(s[2][2],1,nm) then return true end
+      elseif k=="While" then
+        if wr_after(s[3][2],1,nm) then return true end
+      elseif k=="Repeat" then
+        local sh=false
+        for _,st in ipairs(s[2][2]) do
+          if (st[1]=="LocalVar" and inl(st[2],nm)) or (st[1]=="LocalFunc" and st[2]==nm) then sh=true end
+        end
+        if not sh and wr_after(s[2][2],1,nm) then return true end
+      elseif k=="If" then
+        for _,c in ipairs(s[2]) do if wr_after(c[2][2],1,nm) then return true end end
+        if s[3] and wr_after(s[3][2],1,nm) then return true end
+      elseif k=="ForNum" then
+        if s[2]~=nm and wr_after(s[6][2],1,nm) then return true end
+      elseif k=="ForIn" then
+        if not inl(s[2],nm) and wr_after(s[4][2],1,nm) then return true end
+      end
+      local fwr=false
+      A.walk(s,function(x)
+        if fwr then return end
+        if x[1]=="Func" and not inl(x[2],nm) and wr_after(x[4][2],1,nm) then fwr=true end
+      end)
+      if fwr then return true end
+    end
+    return false
+  end
+  local function ip_b(b,pl0,sv0)
     local sts={}
     for i,s in ipairs(b[2]) do sts[i]=s end
+    local pl={} if pl0 then for k,v in pairs(pl0) do pl[k]=v end end
+    local sv={} if sv0 then for k,v in pairs(sv0) do sv[k]=v end end
+    local sev={}
+    local function cp_pl(t,sh)
+      local r={} for k,v in pairs(t) do if not (sh and sh[k]) then r[k]=v end end return r
+    end
+    local function ip_e(e,p2,v2)
+      if type(e)~="table" then return e end
+      local k=e[1]
+      if k=="Var" and v2 and v2[e[2]] then
+        return {"Str",v2[e[2]]}
+      elseif k=="Func" then
+        local sh={} for _,nm in ipairs(e[2]) do sh[nm]=true end
+        return {"Func",e[2],e[3],ip_b(e[4],cp_pl(p2,sh),cp_pl(v2,sh))}
+      elseif k=="Paren" then return {"Paren",ip_e(e[2],p2,v2)}
+      elseif k=="Un" then return {"Un",e[2],ip_e(e[3],p2,v2)}
+      elseif k=="Bin" then return {"Bin",e[2],ip_e(e[3],p2,v2),ip_e(e[4],p2,v2)}
+      elseif k=="Idx" then return {"Idx",ip_e(e[2],p2,v2),ip_e(e[3],p2,v2)}
+      elseif k=="Field" then return {"Field",ip_e(e[2],p2,v2),e[3]}
+      elseif k=="Call" then
+        local as={} for j,a in ipairs(e[3]) do as[j]=ip_e(a,p2,v2) end
+        return {"Call",ip_e(e[2],p2,v2),as}
+      elseif k=="MCall" then
+        local as={} for j,a in ipairs(e[4]) do as[j]=ip_e(a,p2,v2) end
+        return {"MCall",ip_e(e[2],p2,v2),e[3],as}
+      elseif k=="Tbl" then
+        local fs={}
+        for j,f in ipairs(e[2]) do
+          if f[1]=="V" then fs[j]={"V",ip_e(f[2],p2,v2)}
+          elseif f[1]=="F" then fs[j]={"F",f[2],ip_e(f[3],p2,v2)}
+          else fs[j]={"I",ip_e(f[2],p2,v2),ip_e(f[3],p2,v2)} end
+        end
+        return {"Tbl",fs}
+      elseif k=="IfExpr" then
+        local cs={} for j,c in ipairs(e[2]) do cs[j]={ip_e(c[1],p2,v2),ip_e(c[2],p2,v2)} end
+        return {"IfExpr",cs,ip_e(e[3],p2,v2)}
+      end
+      return e
+    end
     local i=1
     while i<=#sts do
-      local pv,pvs=is_str_pool(sts[i])
-      if pv and not mutated_in(sts,i+1,pv) then
-        local rest={}
-        for j=i+1,#sts do rest[#rest+1]=sts[j] end
-        local nb=S.r_pool({"Block",rest},pv,pvs)
-        for j=1,#nb[2] do sts[i+j]=nb[2][j] end
-        if not M.has_use(sts,i+1,pv) then
+      local st=sts[i]
+      local pv,pvs=is_str_pool(st,sev)
+      if pv then
+        local lim,ov=pool_lim(sts,i+1,pv)
+        if lim then
+          local rest={}
+          for j=i+1,lim do rest[#rest+1]=sts[j] end
+          local nb=S.r_pool({"Block",rest},pv,pvs)
+          for j=1,#nb[2] do sts[i+j]=nb[2][j] end
+          for j=i+1,lim do
+            local sj=sts[j]
+            if sj[1]=="LocalVar" and #sj[2]==#sj[3] then
+              for l,r in ipairs(sj[3]) do
+                local u=unp(r)
+                if u[1]=="Var" and u[2]==pv then pl[sj[2][l]]=pvs end
+              end
+            end
+          end
+          pl[pv]=pvs
+          sv[pv]=nil
+          local hc=false
+          A.walk(rest,function(x) if x[1]=="Call" or x[1]=="MCall" then hc=true end end)
+          if ov and st[1]=="Assign" and not hc and not M.has_use(rest,1,pv) and not uv_e(sts[lim+1][3],pv) then
+            table.remove(sts,i)
+          elseif not ov and st[1]=="LocalVar" and not M.has_use(sts,i+1,pv) then
+            table.remove(sts,i)
+          else
+            i=i+1
+          end
+        else
+          pl[pv]=nil sv[pv]=nil i=i+1
+        end
+      elseif st[1]=="LocalVar" and #st[2]==#st[3] then
+        local vs={} for j,v in ipairs(st[3]) do vs[j]=ip_e(v,pl,sv) end
+        local rm_l=true
+        local all_str=#st[2]>=3
+        for j,r in ipairs(vs) do
+          if unp(r)[1]~="Str" then all_str=false break end
+        end
+        for j,r in ipairs(vs) do
+          local nm=st[2][j]
+          local u=unp(r)
+          if u[1]=="Var" and pl[u[2]] and not mut_b(sts,i+1,nm,true) then
+            local pvs2=pl[u[2]]
+            local rest={}
+            for m=i+1,#sts do rest[#rest+1]=sts[m] end
+            local nb=S.r_pool({"Block",rest},nm,pvs2)
+            for m=1,#nb[2] do sts[i+m]=nb[2][m] end
+            pl[nm]=pvs2
+            sv[nm]=nil
+          else
+            pl[nm]=nil
+            if all_str and not wr_after(sts,i+1,nm) then
+              sv[nm]=u[2]
+            else
+              sv[nm]=nil
+            end
+          end
+          if M.has_use(sts,i+1,nm) then rm_l=false end
+          if u[1]=="Str" then sev[nm]=u[2] else sev[nm]=nil end
+        end
+        if #st[2]==1 and rm_l and unp(vs[1])[1]=="Var" and pl[unp(vs[1])[2]] then
           table.remove(sts,i)
         else
+          sts[i]={"LocalVar",st[2],vs}
           i=i+1
         end
       else
+        local k=st[1]
+        if k=="LocalVar" then
+          local vs={} for j,v in ipairs(st[3]) do vs[j]=ip_e(v,pl,sv) end
+          for _,nm in ipairs(st[2]) do pl[nm]=nil sv[nm]=nil sev[nm]=nil end
+          sts[i]={"LocalVar",st[2],vs}
+        elseif k=="Assign" and #st[2]==#st[3] then
+          local ls,rs={},{}
+          for j,l in ipairs(st[2]) do ls[j]=ip_e(l,pl,sv) end
+          local p2={} for q,v in pairs(pl) do p2[q]=v end
+          for j,l in ipairs(ls) do local lu=unp(l) if lu[1]=="Var" then p2[lu[2]]=nil end end
+          for j,r in ipairs(st[3]) do rs[j]=ip_e(r,p2,sv) end
+          sts[i]={"Assign",ls,rs}
+          for j,l in ipairs(ls) do
+            local lu=unp(l)
+            if lu[1]=="Var" then
+              pl[lu[2]]=nil sv[lu[2]]=nil
+              local ru=unp(rs[j])
+              if ru[1]=="Str" then sev[lu[2]]=ru[2] else sev[lu[2]]=nil end
+            end
+          end
+        elseif k=="LocalFunc" then
+          pl[st[2]]=nil sv[st[2]]=nil sev[st[2]]=nil
+          local sh={[st[2]]=true} for _,p in ipairs(st[3]) do sh[p]=true end
+          sts[i]={"LocalFunc",st[2],st[3],st[4],ip_b(st[5],cp_pl(pl,sh),cp_pl(sv,sh))}
+        elseif k=="FuncStmt" then
+          local sh={} for _,p in ipairs(st[4]) do sh[p]=true end if st[3] then sh.self=true end
+          sts[i]={"FuncStmt",ip_e(st[2],pl,sv),st[3],st[4],st[5],ip_b(st[6],cp_pl(pl,sh),cp_pl(sv,sh))}
+        elseif k=="Do" then sts[i]={"Do",ip_b(st[2],pl,sv)}
+        elseif k=="While" then sts[i]={"While",ip_e(st[2],pl,sv),ip_b(st[3],pl,sv)}
+        elseif k=="Repeat" then
+          local sh={}
+          for _,rs in ipairs(st[2][2]) do
+            if rs[1]=="LocalVar" then for _,nm in ipairs(rs[2]) do sh[nm]=true end
+            elseif rs[1]=="LocalFunc" then sh[rs[2]]=true end
+          end
+          sts[i]={"Repeat",ip_b(st[2],pl,sv),ip_e(st[3],cp_pl(pl,sh),cp_pl(sv,sh))}
+        elseif k=="If" then
+          local cs={} for j,c in ipairs(st[2]) do cs[j]={ip_e(c[1],pl,sv),ip_b(c[2],pl,sv)} end
+          sts[i]={"If",cs,st[3] and ip_b(st[3],pl,sv) or false}
+        elseif k=="ForNum" then
+          sts[i]={"ForNum",st[2],ip_e(st[3],pl,sv),ip_e(st[4],pl,sv),st[5] and ip_e(st[5],pl,sv) or false,ip_b(st[6],cp_pl(pl,{[st[2]]=true}),cp_pl(sv,{[st[2]]=true}))}
+        elseif k=="ForIn" then
+          local sh={} for _,nm in ipairs(st[2]) do sh[nm]=true end
+          local es={} for j,e in ipairs(st[3]) do es[j]=ip_e(e,pl,sv) end
+          sts[i]={"ForIn",st[2],es,ip_b(st[4],cp_pl(pl,sh),cp_pl(sv,sh))}
+        elseif k=="Return" then
+          local es={} for j,e in ipairs(st[2]) do es[j]=ip_e(e,pl,sv) end
+          sts[i]={"Return",es}
+        elseif k=="CallStmt" then sts[i]={"CallStmt",ip_e(st[2],pl,sv)}
+        elseif k=="CAssign" then sts[i]={"CAssign",st[2],ip_e(st[3],pl,sv),ip_e(st[4],pl,sv)} end
         i=i+1
       end
     end
     return {"Block",sts}
-  end)
+  end
+  return ip_b(ast,{},{})
 end
 local function add_s_use(s,lv,sh)
   local function ae(e,s2)
@@ -1572,15 +1882,118 @@ local function inv_loc_tbl(ast)
     return {"Block",sts}
   end)
 end
+local function is_eu(e)
+  e=unp(e)
+  if e[1]~="Call" or not is_unp_e(e[2]) or #e[3]<1 then return false end
+  local t=unp(e[3][1])
+  if t[1]~="Tbl" or #t[2]~=0 then return false end
+  if #e[3]==1 then return true end
+  local a2=unp(e[3][2])
+  if a2[1]~="Num" or a2[2]~=1 then return false end
+  if #e[3]==2 then return true end
+  if #e[3]==3 then
+    local a3=unp(e[3][3])
+    if a3[1]=="Nil" or (a3[1]=="Num" and a3[2]==0) then return true end
+    if a3[1]=="Field" and a3[3]=="n" then
+      local b=unp(a3[2]) return b[1]=="Tbl" and #b[2]==0
+    elseif a3[1]=="Idx" and unp(a3[3])[1]=="Str" and unp(a3[3])[2]=="n" then
+      local b=unp(a3[2]) return b[1]=="Tbl" and #b[2]==0
+    end
+  end
+  return false
+end
+local function unp_one(e)
+  local u=unp(e)
+  if u[1]=="Call" and is_unp_e(u[2]) and #u[3]==1 then
+    local t=unp(u[3][1])
+    if t[1]=="Tbl" and #t[2]==1 and t[2][1][1]=="V" then
+      return e[1]=="Paren" and {"Paren",t[2][1][2]} or t[2][1][2]
+    end
+  end
+  return nil
+end
+local function clean_unp(ast)
+  local tr_b,tr_s,tr_e,tr_l
+  tr_e=function(e)
+    if type(e)~="table" then return e end
+    local k=e[1]
+    if k=="Func" then return {"Func",e[2],e[3],tr_b(e[4],true)}
+    elseif k=="Paren" then return {"Paren",tr_e(e[2])}
+    elseif k=="Un" then return {"Un",e[2],tr_e(e[3])}
+    elseif k=="Bin" then return {"Bin",e[2],tr_e(e[3]),tr_e(e[4])}
+    elseif k=="Idx" then return {"Idx",tr_e(e[2]),tr_e(e[3])}
+    elseif k=="Field" then return {"Field",tr_e(e[2]),e[3]}
+    elseif k=="Call" then return {"Call",tr_e(e[2]),tr_l(e[3])}
+    elseif k=="MCall" then return {"MCall",tr_e(e[2]),e[3],tr_l(e[4])}
+    elseif k=="Tbl" then
+      local fs={}
+      for i,f in ipairs(e[2]) do
+        if f[1]=="V" then
+          local r=i==#e[2] and unp_one(f[2]) or nil
+          fs[i]={"V",tr_e(r or f[2])}
+        elseif f[1]=="F" then fs[i]={"F",f[2],tr_e(f[3])}
+        else fs[i]={"I",tr_e(f[2]),tr_e(f[3])} end
+      end
+      return {"Tbl",fs}
+    elseif k=="IfExpr" then
+      local cs={} for i,c in ipairs(e[2]) do cs[i]={tr_e(c[1]),tr_e(c[2])} end
+      return {"IfExpr",cs,tr_e(e[3])}
+    end
+    return e
+  end
+  tr_l=function(es)
+    local out={}
+    for i,e in ipairs(es) do
+      local r=i==#es and unp_one(e) or nil
+      out[i]=tr_e(r or e)
+    end
+    return out
+  end
+  tr_s=function(s)
+    local k=s[1]
+    if k=="LocalVar" then return {"LocalVar",s[2],tr_l(s[3])}
+    elseif k=="LocalFunc" then return {"LocalFunc",s[2],s[3],s[4],tr_b(s[5],true)}
+    elseif k=="FuncStmt" then return {"FuncStmt",tr_e(s[2]),s[3],s[4],s[5],tr_b(s[6],true)}
+    elseif k=="Assign" then
+      local ls={} for i,l in ipairs(s[2]) do ls[i]=tr_e(l) end
+      return {"Assign",ls,tr_l(s[3])}
+    elseif k=="CAssign" then return {"CAssign",s[2],tr_e(s[3]),tr_e(s[4])}
+    elseif k=="Do" then return {"Do",tr_b(s[2],false)}
+    elseif k=="While" then return {"While",tr_e(s[2]),tr_b(s[3],false)}
+    elseif k=="Repeat" then return {"Repeat",tr_b(s[2],false),tr_e(s[3])}
+    elseif k=="If" then
+      local cs={} for i,c in ipairs(s[2]) do cs[i]={tr_e(c[1]),tr_b(c[2],false)} end
+      return {"If",cs,s[3] and tr_b(s[3],false) or false}
+    elseif k=="ForNum" then
+      return {"ForNum",s[2],tr_e(s[3]),tr_e(s[4]),s[5] and tr_e(s[5]) or false,tr_b(s[6],false)}
+    elseif k=="ForIn" then return {"ForIn",s[2],tr_l(s[3]),tr_b(s[4],false)}
+    elseif k=="Return" then
+      if #s[2]==1 and is_eu(s[2][1]) then return {"Return",{}} end
+      return {"Return",tr_l(s[2])}
+    elseif k=="CallStmt" then return {"CallStmt",tr_e(s[2])}
+    end
+    return s
+  end
+  tr_b=function(b,is_fn)
+    local ns={}
+    for i,s in ipairs(b[2]) do ns[i]=tr_s(s) end
+    if is_fn and #ns>0 and ns[#ns][1]=="Return" and #ns[#ns][2]==0 then
+      table.remove(ns,#ns)
+    end
+    return {"Block",ns}
+  end
+  return tr_b(ast,true)
+end
 function M.inv_misc(ast,fold,wm)
   ast=norm_env(ast)
   ast=M.inv_wrap(ast)
-  if wm then ast=M.inv_wm(ast) end
   ast=M.inv_anti(ast)
+  ast=M.inv_wm(ast)
   ast=M.inv_split(ast)
   ast=M.inv_prox(ast)
   ast=inv_loc_tbl(ast)
   ast=M.inv_prox(ast)
+  ast=clean_unp(ast)
   if fold then ast=fold(ast) end
   ast=dead_loc(ast)
   return ast

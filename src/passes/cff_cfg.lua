@@ -365,7 +365,7 @@ local function parse_ctx(fn_e,args)
   for k,v in pairs(env) do
     if not asgn[k] and not bnd[k] then
       local u=unp(v)
-      if u[1]=="Var" or u[1]=="Field" or u[1]=="Nil" or u[1]=="Bool" or u[1]=="Num" or u[1]=="Str" then
+      if u[1]=="Var" or u[1]=="Field" or u[1]=="Nil" or u[1]=="Bool" or u[1]=="Num" or u[1]=="Str" or is_unpack_expr(u,env) then
         if k~=ctx.pv then env_sub[k]=u end
       end
     end

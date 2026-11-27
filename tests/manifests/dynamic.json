@@ -1,6 +1,7 @@
 {
     "seed": 20261112,
     "prometheus_root": "re/prometheus",
+    "prometheus_versions": ["v0.2.12", "v0.3", "v0.3.1", "HEAD"],
     "presets": ["Minify", "Weak", "Cff", "Vmify", "Medium", "Strong"],
     "isolated_steps": [
         "ConstantArray",
@@ -13,6 +14,10 @@
     ],
     "lua51_cases": [
         "src_non_roblox_lua",
+        "single_str",
+        "no_str",
+        "single_ret",
+        "closure_at",
         "closures",
         "loops",
         "multi_ret",
